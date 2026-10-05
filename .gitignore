@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+.env*.local
+.DS_Store
+tsconfig.tsbuildinfo
+*.log
+
+# onnxruntime-web and pdf.js runtimes, synced from node_modules by scripts/sync-ocr-runtime.mjs
+/public/ocr-runtime

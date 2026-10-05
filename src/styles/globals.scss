@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  margin: 0;
+  background: theme('colors.plum.900');
+  color: theme('colors.cream');
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The rendered OCR output: GLM-OCR's Markdown, HTML tables and KaTeX. */
+.safeocr {
+  .safeocr-prose {
+    /* Model output is untrusted layout: keep wide tables scrollable rather than breaking the pane. */
+    table {
+      display: block;
+      max-width: 100%;
+      overflow-x: auto;
+      border-collapse: collapse;
+      font-size: 0.85em;
+    }
+
+    th,
+    td {
+      border: 1px solid theme('colors.plum.300 / 35%');
+      padding: 0.25rem 0.5rem;
+      vertical-align: top;
+    }
+
+    th {
+      background: theme('colors.plum.500 / 35%');
+    }
+
+    .katex-display {
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0.25rem 0;
+    }
+
+    .katex-error {
+      font-family: var(--font-code), ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85em;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  }
+}
