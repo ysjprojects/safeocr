@@ -1,12 +1,11 @@
 import {type FC, type KeyboardEvent, memo, useCallback} from 'react';
 
 import type {EngineStatus} from '@/lib/client';
+import type {GlmSupport} from '@/lib/device';
 import {type Engine, ENGINE_LABEL, GLM_TOTAL_BYTES, PADDLE_TOTAL_BYTES} from '@/lib/protocol';
 
 import Icon from './icons';
 import {ENGINE_DOT, formatBytes, formatSeconds, ghostButtonClass} from './paneShared';
-
-export type WebGpuSupport = 'checking' | 'yes' | 'no';
 
 interface Props {
   onSelect(engine: Engine): void;
@@ -14,9 +13,8 @@ interface Props {
   engine: Engine;
   selected: boolean;
   status: EngineStatus;
-  webgpu: WebGpuSupport;
-  /** `navigator.deviceMemory` in GB where the browser reports it. */
-  deviceMemory: number | null;
+  /** Whether GLM-OCR can run on this device, with the reason or caution to show. */
+  glm: GlmSupport;
 }
 
 const BLURB: Record<Engine, {tagline: string; summary: string; runtime: string; size: string}> = {
@@ -43,9 +41,9 @@ const STATUS_LABEL: Record<EngineStatus['state'], string> = {
   error: 'error',
 };
 
-const EngineCard: FC<Props> = memo(({engine, selected, status, webgpu, deviceMemory, onSelect, onLoad}) => {
-  const unsupported = engine === 'glm' && webgpu === 'no';
-  const lowMemory = engine === 'glm' && deviceMemory !== null && deviceMemory < 8;
+const EngineCard: FC<Props> = memo(({engine, selected, status, glm, onSelect, onLoad}) => {
+  const unsupported = engine === 'glm' && glm.ok === false;
+  const note = engine === 'glm' ? (unsupported ? glm.reason : glm.warning) : null;
   const blurb = BLURB[engine];
 
   const select = useCallback(() => {
@@ -94,18 +92,10 @@ const EngineCard: FC<Props> = memo(({engine, selected, status, webgpu, deviceMem
       <p className="text-subtext0 text-[11px]">
         {blurb.runtime} · {blurb.size}
       </p>
-      {unsupported ? (
+      {note !== null ? (
         <p className="text-yellow flex items-start gap-1.5 text-xs">
           <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" name="alert" />
-          This browser has no WebGPU. Use desktop Chrome or Edge (Safari 26+ and recent Firefox also work), or stay on
-          PP-OCRv5.
-        </p>
-      ) : null}
-      {lowMemory && !unsupported ? (
-        <p className="text-yellow flex items-start gap-1.5 text-xs">
-          <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" name="alert" />
-          This device reports {deviceMemory} GB of memory; GLM-OCR may run out of GPU memory. Try the low-memory detail
-          setting.
+          {note}
         </p>
       ) : null}
       {status.state === 'loading' ? (

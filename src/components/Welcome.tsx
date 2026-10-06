@@ -1,11 +1,12 @@
 import {type FC, memo} from 'react';
 
 import type {EngineStatus} from '@/lib/client';
+import type {GlmSupport} from '@/lib/device';
 import type {Engine} from '@/lib/protocol';
 import type {SessionSummary} from '@/lib/session';
 
 import {DropHero} from './Dropzone';
-import EngineCard, {type WebGpuSupport} from './EngineCard';
+import EngineCard from './EngineCard';
 import Icon from './icons';
 import {ghostButtonClass, primaryButtonClass} from './paneShared';
 
@@ -17,8 +18,7 @@ interface Props {
   onDiscardSession(): void;
   engine: Engine;
   status: Record<Engine, EngineStatus>;
-  webgpu: WebGpuSupport;
-  deviceMemory: number | null;
+  glm: GlmSupport;
   isolated: boolean;
   dragging: boolean;
   /** Work saved in this browser by an earlier visit, if any. */
@@ -37,8 +37,7 @@ const Welcome: FC<Props> = memo(
     onDiscardSession,
     engine,
     status,
-    webgpu,
-    deviceMemory,
+    glm,
     isolated,
     dragging,
     session,
@@ -78,22 +77,20 @@ const Welcome: FC<Props> = memo(
           <h2 className="text-subtext0 text-xs font-semibold uppercase tracking-wider">Engine</h2>
           <div aria-label="Engine" className="grid gap-3 md:grid-cols-2" role="radiogroup">
             <EngineCard
-              deviceMemory={deviceMemory}
               engine="glm"
+              glm={glm}
               onLoad={onLoad}
               onSelect={onEngine}
               selected={engine === 'glm'}
               status={status.glm}
-              webgpu={webgpu}
             />
             <EngineCard
-              deviceMemory={deviceMemory}
               engine="paddle"
+              glm={glm}
               onLoad={onLoad}
               onSelect={onEngine}
               selected={engine === 'paddle'}
               status={status.paddle}
-              webgpu={webgpu}
             />
           </div>
           {!isolated ? (

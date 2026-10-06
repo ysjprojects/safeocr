@@ -11,7 +11,7 @@ Inputs: PNG, JPEG, WebP, GIF, BMP, AVIF (anything the browser decodes), pasted s
 
 ## Browser support
 
-- GLM-OCR needs WebGPU with `shader-f16`: desktop Chrome and Edge, Safari 26+, recent Firefox. Phones are marginal (memory). The app detects support and falls back to PP-OCRv5 as the default engine.
+- GLM-OCR needs WebGPU with `shader-f16` and about 2 GB of memory in one tab: desktop Chrome and Edge, Safari 26+, recent Firefox. iPhone and iPad have WebGPU but Safari kills a tab well before that, so GLM-OCR is not offered there (nor on devices reporting under 4 GB); the app probes this on start and falls back to PP-OCRv5 as the default engine.
 - PP-OCRv5 runs anywhere with WebAssembly. With the cross-origin-isolation headers below it uses a thread pool; without them it still works, single-threaded.
 
 ## Running it

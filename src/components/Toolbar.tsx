@@ -1,6 +1,7 @@
 import {type ChangeEvent, type FC, memo, useCallback} from 'react';
 
 import type {EngineStatus} from '@/lib/client';
+import type {GlmSupport} from '@/lib/device';
 import {
   type Detail,
   type Engine,
@@ -13,7 +14,6 @@ import {
 } from '@/lib/protocol';
 
 import {FilePicker} from './Dropzone';
-import type {WebGpuSupport} from './EngineCard';
 import Icon from './icons';
 import {dangerButtonClass, ENGINE_DOT, primaryButtonClass, secondaryButtonClass, selectClass} from './paneShared';
 
@@ -31,7 +31,7 @@ interface Props {
   mode: Mode;
   detail: Detail;
   status: Record<Engine, EngineStatus>;
-  webgpu: WebGpuSupport;
+  glm: GlmSupport;
   running: boolean;
   /** Pages a plain Run would process. */
   pending: number;
@@ -50,7 +50,7 @@ const Toolbar: FC<Props> = memo(
     mode,
     detail,
     status,
-    webgpu,
+    glm,
     running,
     pending,
     selectedCount,
@@ -86,7 +86,7 @@ const Toolbar: FC<Props> = memo(
                 running={running}
                 selected={engine === e}
                 status={status[e]}
-                unsupported={e === 'glm' && webgpu === 'no'}
+                unavailable={e === 'glm' && glm.ok === false ? glm.reason : null}
               />
             ))}
           </div>
@@ -199,9 +199,10 @@ const EngineOption: FC<{
   engine: Engine;
   selected: boolean;
   running: boolean;
-  unsupported: boolean;
+  /** Why the engine cannot run here, when it cannot. */
+  unavailable: string | null;
   status: EngineStatus;
-}> = memo(({engine, selected, running, unsupported, status, onSelect}) => {
+}> = memo(({engine, selected, running, unavailable, status, onSelect}) => {
   const select = useCallback(() => onSelect(engine), [engine, onSelect]);
   return (
     <button
@@ -209,14 +210,10 @@ const EngineOption: FC<{
       className={`inline-flex items-center gap-2 rounded px-2.5 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
         selected ? 'bg-surface0 text-text shadow-sm' : 'text-subtext0 hover:text-text'
       }`}
-      disabled={running || unsupported}
+      disabled={running || unavailable !== null}
       onClick={select}
       role="radio"
-      title={
-        unsupported
-          ? 'GLM-OCR needs WebGPU, which this browser does not have'
-          : `${ENGINE_LABEL[engine]}: ${status.state === 'idle' ? 'not loaded' : status.state}`
-      }
+      title={unavailable ?? `${ENGINE_LABEL[engine]}: ${status.state === 'idle' ? 'not loaded' : status.state}`}
       type="button">
       <span className={`h-1.5 w-1.5 rounded-full ${ENGINE_DOT[status.state]}`} />
       {ENGINE_LABEL[engine]}

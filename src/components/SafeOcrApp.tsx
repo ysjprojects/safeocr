@@ -2,6 +2,7 @@ import {type FC, type MutableRefObject, memo, useCallback, useEffect, useMemo, u
 
 import {deleteModelCaches} from '@/lib/assets';
 import {getOcrClient} from '@/lib/client';
+import {type GlmSupport, GLM_UNKNOWN, probeGlmSupport} from '@/lib/device';
 import {download, outputName, zip} from '@/lib/export';
 import {type Rasterized, closePdf, countPages, isPdf, rasterize} from '@/lib/inputs';
 import {
@@ -45,7 +46,6 @@ import {useTheme} from '@/lib/theme';
 
 import ConfirmDialog from './ConfirmDialog';
 import {DropOverlay, useFileDrop} from './Dropzone';
-import type {WebGpuSupport} from './EngineCard';
 import Icon from './icons';
 import PageRail, {type SelectModifiers} from './PageRail';
 import ResultPane from './ResultPane';
@@ -54,25 +54,6 @@ import SourcePane from './SourcePane';
 import StatusBar from './StatusBar';
 import Toolbar from './Toolbar';
 import Welcome from './Welcome';
-
-const detectWebGpu = async (): Promise<boolean> => {
-  if (!('gpu' in navigator)) return false;
-  const gpu: unknown = navigator.gpu;
-  if (
-    typeof gpu !== 'object' ||
-    gpu === null ||
-    !('requestAdapter' in gpu) ||
-    typeof gpu.requestAdapter !== 'function'
-  ) {
-    return false;
-  }
-  try {
-    const adapter: unknown = await gpu.requestAdapter();
-    return adapter !== null && adapter !== undefined;
-  } catch {
-    return false;
-  }
-};
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -95,8 +76,8 @@ const SafeOcrApp: FC = memo(() => {
   const [status, setStatus] = useState(client.getStatus());
   useEffect(() => client.subscribe(setStatus), [client]);
 
-  const [webgpu, setWebgpu] = useState<WebGpuSupport>('checking');
-  const [deviceMemory, setDeviceMemory] = useState<number | null>(null);
+  /** Whether GLM-OCR can run here (WebGPU and enough memory); probed once on mount. */
+  const [glm, setGlm] = useState<GlmSupport>(GLM_UNKNOWN);
   const [isolated, setIsolated] = useState(true);
   const [docs, setDocs] = useState<DocJob[]>([]);
   /** The page on screen. */
@@ -119,10 +100,10 @@ const SafeOcrApp: FC = memo(() => {
   const [settings, updateSettings] = useSettings();
   useTheme(settings.theme);
   const {mode, detail, sourceShown} = settings;
-  // The stored engine preference, bounded by what this browser can run; before a choice is made,
-  // GLM-OCR when WebGPU is available.
-  const wantsGlm = settings.engine === 'glm' || (settings.engine === null && webgpu === 'yes');
-  const engine: Engine = wantsGlm && webgpu !== 'no' ? 'glm' : 'paddle';
+  // The stored engine preference, bounded by what this device can run; before a choice is made,
+  // GLM-OCR where it can run.
+  const wantsGlm = settings.engine === 'glm' || (settings.engine === null && glm.ok === true);
+  const engine: Engine = wantsGlm && glm.ok !== false ? 'glm' : 'paddle';
   const setEngine = useCallback((e: Engine) => updateSettings({engine: e}), [updateSettings]);
   const setMode = useCallback((m: Mode) => updateSettings({mode: m}), [updateSettings]);
   const setDetail = useCallback((d: Detail) => updateSettings({detail: d}), [updateSettings]);
@@ -140,23 +121,21 @@ const SafeOcrApp: FC = memo(() => {
   const follow = useRef(true);
 
   useEffect(() => {
-    detectWebGpu().then(ok => setWebgpu(ok ? 'yes' : 'no'));
-    if ('deviceMemory' in navigator && typeof navigator.deviceMemory === 'number')
-      setDeviceMemory(navigator.deviceMemory);
+    probeGlmSupport().then(setGlm);
     setIsolated(crossOriginIsolated);
     peekSession().then(summary => {
       if (summary !== null && summary.pages > 0) setSession(summary);
     });
   }, []);
 
-  // Opt-in preloading: once WebGPU support is known (so the engine is the right one), load it so
-  // the first Run does not wait. Also fires when the option is switched on mid-session.
+  // Opt-in preloading: once the device is probed (so the engine is the right one), load it so the
+  // first Run does not wait. Also fires when the option is switched on mid-session.
   const preloaded = useRef(false);
   useEffect(() => {
-    if (webgpu === 'checking' || !settings.autoLoad || preloaded.current) return;
+    if (glm.ok === null || !settings.autoLoad || preloaded.current) return;
     preloaded.current = true;
     void client.load(engine).catch(() => undefined);
-  }, [client, engine, settings.autoLoad, webgpu]);
+  }, [client, engine, glm.ok, settings.autoLoad]);
 
   // Models live in the worker; free them when the tab goes away or the user leaves the page.
   useEffect(() => {
@@ -714,7 +693,7 @@ const SafeOcrApp: FC = memo(() => {
     !comparing &&
     !running &&
     otherEngine !== null &&
-    (otherEngine === 'paddle' || webgpu === 'yes') &&
+    (otherEngine === 'paddle' || glm.ok === true) &&
     current !== null &&
     hasRun(current.page);
 
@@ -777,6 +756,7 @@ const SafeOcrApp: FC = memo(() => {
       <Toolbar
         detail={detail}
         engine={engine}
+        glm={glm}
         mode={mode}
         onDetail={setDetail}
         onEngine={setEngine}
@@ -790,14 +770,13 @@ const SafeOcrApp: FC = memo(() => {
         selectedCount={selection.size}
         selectedPending={selectedPending}
         status={status}
-        webgpu={webgpu}
       />
 
       {docs.length === 0 ? (
         <Welcome
-          deviceMemory={deviceMemory}
           dragging={dragging}
           engine={engine}
+          glm={glm}
           isolated={isolated}
           onDiscardSession={discardSession}
           onEngine={setEngine}
@@ -806,7 +785,6 @@ const SafeOcrApp: FC = memo(() => {
           onRestoreSession={restoreSession}
           session={session}
           status={status}
-          webgpu={webgpu}
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
