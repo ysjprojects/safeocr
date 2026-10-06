@@ -17,8 +17,9 @@ const nextConfig = {
       },
       {
         // The onnxruntime-web and pdf.js runtimes live in version-named directories (synced from
-        // node_modules by scripts/sync-ocr-runtime.mjs), so they can be cached forever.
-        source: '/ocr-runtime/:lib/:version/:path*',
+        // node_modules by scripts/sync-ocr-runtime.mjs), as do the patched GLM-OCR graphs
+        // (scripts/patch-glm-graphs.py), so they can be cached forever.
+        source: '/(ocr-runtime|models)/:lib/:version/:path*',
         headers: [{key: 'Cache-Control', value: 'public, max-age=31536000, immutable'}],
       },
       {

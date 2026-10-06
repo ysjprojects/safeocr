@@ -8,6 +8,7 @@ import * as ort from 'onnxruntime-web/webgpu';
 
 import {GlmEngine} from './engines/glm';
 import {PaddleEngine} from './engines/paddle';
+import {webgpuLoaderUrl} from './ortLoader';
 import type {AssetHosts, Engine, OcrSegment, WorkerRequest, WorkerResponse} from './protocol';
 
 interface WorkerScope {
@@ -40,10 +41,11 @@ function configureRuntime(): void {
   runtimeConfigured = true;
   // Both engines share this onnxruntime-web instance (Transformers.js imports the same module), so
   // one path setting serves both; it points at public/ocr-runtime/ort/<version>/ (synced from
-  // node_modules at build time) instead of the jsDelivr default.
+  // node_modules at build time) instead of the jsDelivr default. The loader goes through
+  // webgpuLoaderUrl, which sets the WebGPU provider options the API cannot.
   const base = `${self.location.origin}/ocr-runtime/ort/${ort.env.versions.web}/`;
   const wasmPaths = {
-    mjs: `${base}ort-wasm-simd-threaded.asyncify.mjs`,
+    mjs: webgpuLoaderUrl(`${base}ort-wasm-simd-threaded.asyncify.mjs`),
     wasm: `${base}ort-wasm-simd-threaded.asyncify.wasm`,
   };
   ort.env.wasm.wasmPaths = wasmPaths;

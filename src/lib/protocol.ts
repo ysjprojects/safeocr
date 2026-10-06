@@ -45,20 +45,25 @@ export const MODE_SPEC: Record<Mode, ModeSpec> = {
   },
 };
 
-/** Pixel budget before the image reaches the model; it bounds vision tokens, GPU memory and latency. */
+/**
+ * Pixel budget before the image reaches the model; it bounds vision tokens, GPU memory and latency.
+ * The vision encoder attends across the whole page, so its cost grows faster than the pixel count:
+ * measured on an M1 Pro, 1.5 → 1.2 MP cut the time to the first token by 29 % with no change in
+ * the text read from 8-pt body copy, while 1.0 MP began to misread digits.
+ */
 export type Detail = 'low' | 'standard' | 'high';
 
 export const DETAILS: Detail[] = ['low', 'standard', 'high'];
 
 export const DETAIL_PIXELS: Record<Detail, number> = {
   low: 750_000,
-  standard: 1_500_000,
+  standard: 1_200_000,
   high: 2_500_000,
 };
 
 export const DETAIL_LABEL: Record<Detail, string> = {
   low: 'Low memory (0.75 MP)',
-  standard: 'Standard (1.5 MP)',
+  standard: 'Standard (1.2 MP)',
   high: 'High detail (2.5 MP)',
 };
 /** Where model files come from. Both default to huggingface.co; override to serve them yourself. */
@@ -71,7 +76,14 @@ export interface AssetHosts {
 
 export const GLM_MODEL_ID = 'onnx-community/GLM-OCR-ONNX';
 
-/** The three q4f16 sessions of the GLM-OCR export (plus the tokenizer), sized for the download bar. */
+/** The graphs this origin serves in place of upstream's (scripts/patch-glm-graphs.py). */
+export const GLM_PATCH_DIR = '/models/glm-ocr/aea46198-7';
+
+/**
+ * The three q4f16 sessions of the GLM-OCR export (plus the tokenizer) and the draft model's files,
+ * sized for the download bar. The weights' sizes also pin the upstream revision the patched graphs
+ * were made for.
+ */
 export const GLM_FILE_BYTES: Record<string, number> = {
   'onnx/vision_encoder_q4f16.onnx': 474_559,
   'onnx/vision_encoder_q4f16.onnx_data': 262_272_000,

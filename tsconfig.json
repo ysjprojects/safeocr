@@ -21,6 +21,12 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
+    "types": [
+      "node",
+      "react",
+      "react-dom",
+      "@webgpu/types"
+    ],
     "baseUrl": ".",
     "paths": {
       "@/*": [

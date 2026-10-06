@@ -1,4 +1,4 @@
-import {type FC, memo} from 'react';
+import {type FC, memo, useEffect, useState} from 'react';
 
 import type {EngineStatus} from '@/lib/client';
 import type {PageState} from '@/lib/jobs';
@@ -15,6 +15,13 @@ export const secondaryButtonClass = `${button} border border-surface1 bg-base px
 export const ghostButtonClass = `${button} px-2.5 py-1.5 text-subtext1 hover:bg-surface0 hover:text-text disabled:hover:bg-transparent`;
 
 export const iconButtonClass = `${button} h-7 w-7 text-subtext0 hover:bg-surface0 hover:text-text disabled:hover:bg-transparent`;
+
+/**
+ * A pane's header row. It wraps rather than clips: on a phone the action group drops to a second,
+ * right-aligned row (every button stays reachable); on wider screens it is the usual single row.
+ */
+export const paneHeaderClass =
+  'border-surface0 bg-mantle flex min-h-10 shrink-0 flex-wrap items-center gap-y-1 overflow-hidden border-b py-1 pl-4 pr-2';
 
 /** Form controls: 16px on touch screens, where anything smaller makes iOS zoom the page on focus. */
 export const selectClass =
@@ -98,6 +105,23 @@ export function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+/** `4.0s` under ten seconds, whole seconds (`12s`) above: the unit sits tight, a full cell apart reads as a hole in code fonts. */
 export function formatSeconds(ms: number): string {
-  return ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`;
+  return ms >= 10_000 ? `${Math.round(ms / 1000)}s` : `${(ms / 1000).toFixed(1)}s`;
 }
+
+/** Whole seconds since `since` (a `Date.now()` stamp), ticking on the stamp's own second boundaries. */
+export const Elapsed: FC<{since: number}> = memo(({since}) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer = 0;
+    const tick = () => {
+      setNow(Date.now());
+      timer = window.setTimeout(tick, 1000 - ((Date.now() - since) % 1000));
+    };
+    timer = window.setTimeout(tick, 1000 - ((Date.now() - since) % 1000));
+    return () => window.clearTimeout(timer);
+  }, [since]);
+  return <span className="text-subtext0 tabular-nums">{Math.max(0, Math.floor((now - since) / 1000))}s</span>;
+});
+Elapsed.displayName = 'Elapsed';

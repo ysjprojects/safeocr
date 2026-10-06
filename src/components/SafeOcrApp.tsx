@@ -50,7 +50,7 @@ import Icon from './icons';
 import PageRail, {type SelectModifiers} from './PageRail';
 import ResultPane from './ResultPane';
 import SettingsMenu from './SettingsMenu';
-import SourcePane from './SourcePane';
+import SourcePane, {SourceHandle} from './SourcePane';
 import StatusBar from './StatusBar';
 import Toolbar from './Toolbar';
 import Welcome from './Welcome';
@@ -70,6 +70,12 @@ type Slot = MutableRefObject<{pageId: string; runId: number} | null>;
 const editingTarget = (target: EventTarget | null): boolean =>
   target instanceof Element &&
   target.closest('dialog, input, select, textarea, [contenteditable="true"], [role="dialog"]') !== null;
+
+/** What a page's pixels depend on: the page as rotated and cropped, and the pixel budget. */
+const rasterKey = (page: PageJob, budget: number): string => {
+  const r = page.region;
+  return `${page.id}|${page.rotation}|${r === null ? '' : `${r.x},${r.y},${r.width},${r.height}`}|${budget}`;
+};
 
 const SafeOcrApp: FC = memo(() => {
   const client = useMemo(() => getOcrClient(), []);
@@ -185,8 +191,41 @@ const SafeOcrApp: FC = memo(() => {
   }, [client]);
 
   /**
-   * One page through one engine: load it, rasterise the page as it is rotated and cropped, run.
-   * `onRaster` fires before recognition starts (the preview can be shown while the model works).
+   * The next page's raster, prepared while the current one runs: pdf.js, the canvas and the JPEG
+   * preview take a good part of a second per page, time the engine would otherwise sit idle. One
+   * slot, taken only by the page it was made for as it still is (rotation, region, budget);
+   * anything else is rasterised when its turn comes.
+   */
+  const prepared = useRef<{key: string; raster: Promise<Rasterized | null>} | null>(null);
+
+  const rasterFor = useCallback(async (doc: DocJob, page: PageJob, budget: number): Promise<Rasterized> => {
+    const key = rasterKey(page, budget);
+    const ahead = prepared.current;
+    if (ahead !== null && ahead.key === key) {
+      prepared.current = null;
+      const raster = await ahead.raster;
+      if (raster !== null) return raster;
+    }
+    return rasterize(doc.file, page.index, budget, {rotation: page.rotation, region: page.region});
+  }, []);
+
+  /** Starts rasterising the page that will run after `page`, if one is waiting. */
+  const prepareNext = useCallback((page: PageJob, budget: number) => {
+    if (!runningRef.current) return;
+    const next = firstQueued(docsRef.current, page.id);
+    const doc = next === null ? undefined : docsRef.current.find(d => d.id === next.docId);
+    if (next === null || doc === undefined) return;
+    prepared.current = {
+      key: rasterKey(next, budget),
+      // Not reported: a page that cannot be rasterised fails, for real, when its own turn comes.
+      raster: rasterize(doc.file, next.index, budget, {rotation: next.rotation, region: next.region}).catch(() => null),
+    };
+  }, []);
+
+  /**
+   * One page through one engine: load it, rasterise the page as it is rotated and cropped (or take
+   * the raster prepared for it), run. `onRaster` fires before recognition starts (the preview can
+   * be shown while the model works).
    */
   const runOnce = useCallback(
     async (
@@ -205,7 +244,7 @@ const SafeOcrApp: FC = memo(() => {
       }
       let raster: Rasterized;
       try {
-        raster = await rasterize(doc.file, page.index, budget, {rotation: page.rotation, region: page.region});
+        raster = await rasterFor(doc, page, budget);
       } catch (error) {
         return {kind: 'error', message: errorMessage(error), stage: 'raster'};
       }
@@ -219,7 +258,7 @@ const SafeOcrApp: FC = memo(() => {
       slot.current = null;
       return result.kind === 'error' ? {...result, stage: 'run'} : result;
     },
-    [client],
+    [client, rasterFor],
   );
 
   const pump = useCallback(async () => {
@@ -235,12 +274,19 @@ const SafeOcrApp: FC = memo(() => {
         const budget = DETAIL_PIXELS[dt];
 
         setDocs(d =>
-          updatePage(d, page.id, {state: 'running', engine: eng, mode: eng === 'glm' ? md : null, ...RUN_START}),
+          updatePage(d, page.id, {
+            state: 'running',
+            engine: eng,
+            mode: eng === 'glm' ? md : null,
+            ...RUN_START,
+            startedAt: Date.now(),
+          }),
         );
         if (follow.current) setSelected(page.id);
 
         const result = await runOnce(doc, page, eng, md, budget, currentRun, {
           onRaster: raster => {
+            prepareNext(page, budget);
             const previewUrl = URL.createObjectURL(raster.preview);
             setDocs(d =>
               updatePage(d, page.id, p => {
@@ -290,11 +336,12 @@ const SafeOcrApp: FC = memo(() => {
       }
     } finally {
       loopActive.current = false;
+      prepared.current = null;
       runningRef.current = false;
       setRunning(false);
       setDocs(unqueueAll);
     }
-  }, [runOnce]);
+  }, [prepareNext, runOnce]);
 
   const launch = useCallback(() => {
     follow.current = true;
@@ -806,7 +853,7 @@ const SafeOcrApp: FC = memo(() => {
           />
           {/* Below lg the panes stack and the area scrolls as one; at lg each pane scrolls on its own. */}
           <main className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
-            {sourceShown && current !== null ? (
+            {current === null ? null : sourceShown ? (
               <SourcePane
                 activeLine={activeLine}
                 doc={current.doc}
@@ -820,7 +867,9 @@ const SafeOcrApp: FC = memo(() => {
                 position={position}
                 total={flat.length}
               />
-            ) : null}
+            ) : (
+              <SourceHandle onShow={showSource} />
+            )}
             <ResultPane
               activeLine={activeLine}
               canCompare={canCompare}
@@ -830,10 +879,8 @@ const SafeOcrApp: FC = memo(() => {
               onCompare={compare}
               onEdit={edit}
               onRerun={requestRerun}
-              onShowSource={showSource}
               page={current?.page ?? null}
               query={query}
-              sourceShown={sourceShown}
             />
           </main>
         </div>

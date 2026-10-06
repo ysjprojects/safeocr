@@ -22,9 +22,10 @@ import {
   CONFIDENCE,
   CONFIDENCE_TEXT,
   confidenceBand,
+  Elapsed,
   formatSeconds,
   ghostButtonClass,
-  iconButtonClass,
+  paneHeaderClass,
   primaryButtonClass,
   StateBadge,
 } from './paneShared';
@@ -32,7 +33,6 @@ import {
 interface Props {
   onCancel(pageId: string): void;
   onRerun(pageId: string): void;
-  onShowSource(): void;
   /** The user changed the text by hand (the app stores it and marks the page edited). */
   onEdit(pageId: string, text: string): void;
   /** Run the other engine on this page, for the Compare tab. */
@@ -41,7 +41,6 @@ interface Props {
   onActiveLine(line: number | null): void;
   doc: DocJob | null;
   page: PageJob | null;
-  sourceShown: boolean;
   /** Line highlighted from the scan pane. */
   activeLine: number | null;
   /** Search query to highlight (case-insensitive); '' for none. */
@@ -66,20 +65,7 @@ type Copied = 'text' | 'converted';
 
 /** The recognised text of the selected page: rendered Markdown, confidence-tinted lines or a diff; copy, download, edit. */
 const ResultPane: FC<Props> = memo(
-  ({
-    activeLine,
-    canCompare,
-    doc,
-    page,
-    query,
-    sourceShown,
-    onActiveLine,
-    onCancel,
-    onCompare,
-    onEdit,
-    onRerun,
-    onShowSource,
-  }) => {
+  ({activeLine, canCompare, doc, page, query, onActiveLine, onCancel, onCompare, onEdit, onRerun}) => {
     const [tab, setTab] = useState<Tab>('rendered');
     const [editing, setEditing] = useState(false);
     const [copied, setCopied] = useState<Copied | null>(null);
@@ -175,7 +161,7 @@ const ResultPane: FC<Props> = memo(
 
     return (
       <section className="bg-base flex shrink-0 flex-col lg:min-h-0 lg:min-w-0 lg:flex-1">
-        <div className="border-surface0 bg-mantle flex h-10 shrink-0 items-center gap-3 overflow-hidden border-b pl-4 pr-2">
+        <div className={`${paneHeaderClass} gap-x-3`}>
           <span className="text-subtext0 text-xs font-semibold uppercase tracking-wider">Text</span>
           {showTabs ? (
             <div className="border-surface1 bg-base flex rounded-md border p-0.5">
@@ -245,16 +231,6 @@ const ResultPane: FC<Props> = memo(
                   <span className={editing ? '' : 'hidden 2xl:inline'}>{editing ? 'Done' : 'Edit'}</span>
                 </button>
               </>
-            ) : null}
-            {!sourceShown ? (
-              <button
-                aria-label="Show scan"
-                className={iconButtonClass}
-                onClick={onShowSource}
-                title="Show the scan beside the text"
-                type="button">
-                <Icon name="image" />
-              </button>
             ) : null}
             <button
               aria-label="Copy"
@@ -344,6 +320,7 @@ const ResultPane: FC<Props> = memo(
                 <p className="font-code text-blue mb-3 flex items-center gap-2 text-[11px]">
                   <Icon className="h-3.5 w-3.5 motion-safe:animate-spin" name="loader" />
                   {page.stage}
+                  {page.startedAt !== null ? <Elapsed since={page.startedAt} /> : null}
                 </p>
               ) : null}
               {editing ? (
@@ -379,11 +356,7 @@ const ResultPane: FC<Props> = memo(
                     ))}
                   </div>
                 )
-              ) : streaming ? (
-                <p className="text-subtext0 text-xs motion-safe:animate-pulse">
-                  {glm ? 'encoding the image…' : 'working…'}
-                </p>
-              ) : page.state === 'done' ? (
+              ) : streaming ? null : page.state === 'done' ? (
                 <p className="text-subtext0 text-xs">No text was found on this page.</p>
               ) : (
                 <p className="text-subtext0 text-xs">Not processed yet. Press Run to recognise every pending page.</p>

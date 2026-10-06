@@ -14,7 +14,14 @@ import {type DocJob, type PageJob, pageLabel} from '@/lib/jobs';
 import {type OcrSegment} from '@/lib/protocol';
 
 import Icon from './icons';
-import {CONFIDENCE_BOX, confidenceBand, ghostButtonClass, iconButtonClass, primaryButtonClass} from './paneShared';
+import {
+  CONFIDENCE_BOX,
+  confidenceBand,
+  ghostButtonClass,
+  iconButtonClass,
+  paneHeaderClass,
+  primaryButtonClass,
+} from './paneShared';
 
 interface Props {
   onPrev(): void;
@@ -225,7 +232,7 @@ const SourcePane: FC<Props> = memo(
       <section
         className="border-surface0 bg-crust flex shrink-0 flex-col border-b lg:min-h-0 lg:min-w-0 lg:flex-1 lg:border-b-0 lg:border-r"
         onKeyDown={onKeyDown}>
-        <div className="border-surface0 bg-mantle flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b pl-4 pr-2">
+        <div className={`${paneHeaderClass} gap-x-2`}>
           <span className="text-subtext0 text-xs font-semibold uppercase tracking-wider">Scan</span>
           {page.width !== null && page.height !== null ? (
             <span className="font-code text-subtext0 hidden whitespace-nowrap text-[11px] xl:inline">
@@ -391,5 +398,22 @@ const SourcePane: FC<Props> = memo(
   },
 );
 SourcePane.displayName = 'SourcePane';
+
+/**
+ * What stays of the scan pane once it is hidden: a strip in its place (beside the text, or above it
+ * where the panes stack) that brings it back, so the way back is where the pane was.
+ */
+export const SourceHandle: FC<{onShow(): void}> = memo(({onShow}) => (
+  <button
+    aria-label="Show scan"
+    className="border-surface0 bg-mantle text-subtext0 hover:bg-surface0 hover:text-text flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs font-semibold uppercase tracking-wider transition lg:h-auto lg:w-10 lg:flex-col lg:justify-start lg:gap-3 lg:border-b-0 lg:border-r lg:px-0 lg:pt-3"
+    onClick={onShow}
+    title="Show the scan beside the text"
+    type="button">
+    <Icon className="h-4 w-4" name="image" />
+    <span className="lg:[writing-mode:vertical-rl]">Show scan</span>
+  </button>
+));
+SourceHandle.displayName = 'SourceHandle';
 
 export default SourcePane;

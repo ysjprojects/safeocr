@@ -46,7 +46,10 @@ src/lib/protocol.ts          engines, modes, pixel budgets, model files, worker 
 src/lib/inputs.ts            images via createImageBitmap (<img> fallback), PDFs via pdf.js; downscale to the pixel budget
 src/lib/client.ts            main-thread handle: one worker per tab, engine status, streaming, cancel, dispose on pagehide
 src/lib/worker.ts            the worker: loads engines on demand, runs one request at a time
-src/lib/engines/glm.ts       GLM-OCR through Transformers.js (WebGPU, q4f16, TextStreamer, interruptable)
+src/lib/engines/glm.ts       GLM-OCR through Transformers.js (WebGPU, q4f16, interruptable, loop guard); prefill via Transformers.js
+src/lib/engines/decode.ts    the decode loop: GPU-resident inputs, next token on the GPU, no readback on the critical path
+src/lib/ortLoader.ts         wraps onnxruntime-web's WebAssembly loader to set WebGPU provider options its API cannot
+src/lib/trim.ts              trims a page's uniform margins before GLM-OCR sees it (the encoder's cost grows with pixels²)
 src/lib/engines/paddle.ts    PP-OCRv5 through paddleocr on the same onnxruntime-web instance (wasm)
 src/lib/jobs.ts              documents → pages → OCR state; a rerun keeps the old result until the new run succeeds
 src/lib/export.ts            downloads and a store-only ZIP writer (text and binary members)
@@ -58,9 +61,12 @@ src/lib/pwa.ts               service-worker registration (public/sw.js, manifest
 src/lib/settings.ts          per-user settings in localStorage (theme, engine, output, detail, scan toggle, load on open, keep session)
 src/styles/palette.ts        Catppuccin Latte (light) and Mocha (dark); lib/theme.ts applies the theme setting
 scripts/sync-ocr-runtime.mjs copies the runtimes into public/ocr-runtime/
+scripts/patch-glm-graphs.py  derives public/models/glm-ocr/<tag>/ (vision + decoder graphs) from upstream's export (see below)
 ```
 
-Every page is downscaled to the chosen detail budget (0.75 / 1.5 / 2.5 MP) before the RGBA buffer is transferred to the worker; vision tokens, GPU memory and latency all scale with it, and the GLM processor enforces the same cap. GLM output is rendered with `react-markdown` + GFM + KaTeX behind `rehype-sanitize` (HTML tables allowed, images dropped, so an OCR'd page can never trigger a network request); the stored and downloaded text is exactly what the model produced.
+Every page is downscaled to the chosen detail budget (0.75 / 1.2 / 2.5 MP) before the RGBA buffer is transferred to the worker; vision tokens, GPU memory and latency all scale with it, and the GLM processor enforces the same cap. In the worker, GLM-OCR then trims the page's uniform margins (`src/lib/trim.ts`): the vision encoder attends across every patch, so its cost grows faster than the pixel count and a scan's margins are a quarter of it for nothing; the preview, exports and PP-OCRv5 still see the whole page. A run that starts repeating itself (a block of up to 64 tokens, over 200 tokens) is stopped and cut at the first repeat instead of running to the token cap. GLM output is rendered with `react-markdown` + GFM + KaTeX behind `rehype-sanitize` (HTML tables allowed, images dropped, so an OCR'd page can never trigger a network request); the stored and downloaded text is exactly what the model produced.
+
+GLM-OCR's graphs are served from this origin (`public/models/glm-ocr/<tag>/`, made by `scripts/patch-glm-graphs.py` from upstream's export; only the two graphs differ, the weights still come from the Hub, so the worker checks their size against the one the patch was made for and falls back to upstream's graphs and Transformers.js's `generate()` if the Hub has moved on). The vision graph has the attention mask removed, which the export builds for batches of several images and which is all zeros for the one image a run sends — on an M1 Pro that alone took 42 % off the time to the first token. The decoder graph emits the next token itself (an ArgMax output), loses the mask-derived attention bias (zeros for one unpadded sequence), reads rotary positions from one shared offset instead of 32 per-token CPU computations, takes its lengths from Shape of float tensors, and runs its norms and rotary embeddings in fp16 without the export's fp32 casts and head transposes. `src/lib/engines/decode.ts` drives it after Transformers.js's prefill: the token, the embedding, the mask and the positions all live in GPU buffers, every decoder output is a GPU buffer, and the token is copied back one step late while the next pass runs — a step is three command buffers and no copy in either direction, where Transformers.js's loop read the logits back after every pass and onnxruntime uploaded 35 small CPU tensors per token, each with a command-buffer flush. Two provider options make that possible (`src/lib/ortLoader.ts`): int64 kernels, so the int64 inputs stay on the GPU, and one command buffer per pass instead of one per 16 kernels; onnxruntime-web's API cannot set either (the provider parses its options before `session_options.extra` is applied), so the loader of the WebAssembly runtime is wrapped to add them. Output is byte-identical to Transformers.js's greedy decoding on the test pages.
 
 Run processes every page that has not succeeded yet. To process a subset, pick pages in the rail — click selects one, ⇧-click a range, ⌘/Ctrl-click adds or removes; on touch screens, **Select** in the rail header makes taps add and remove — and Run limits itself to the selection while a second button keeps "run everything" one click away; Esc or Deselect clears it. Pages that are done are never picked up by Run; they go through Rerun. On phones the page list folds under its header and the scan arrows move between pages; the layout goes side by side from 1024 px.
 
@@ -75,7 +81,7 @@ Both engines share one `onnxruntime-web` instance: `package.json` pins the exact
 ## Caveats
 
 - 650 MB is a real adoption tax; the first GLM-OCR run on a machine downloads it (progress is shown), later visits read it from the browser cache.
-- A dense 1.5 MP page takes roughly 10–30 s on a laptop GPU (vision prefill dominates; decoding runs at tens of tokens per second). Use the low-memory detail setting on machines with little GPU memory.
+- A dense 1.2 MP page of body text takes about 14–16 s on an M1 Pro (2–4 s until the first token, then ~52–55 tokens per second; a page with little text takes 1–2 s). The remaining cost is onnxruntime-web's single-token MatMulNBits kernel, which reads the 290 MB of 4-bit weights a token needs at 15–35 GB/s on this GPU; its faster paths need four or more tokens per pass or symmetric weights. "High detail" costs several times that: the encoder's cost grows with the square of the pixel count. Use the low-memory setting on machines with little GPU memory.
 - GLM-OCR is generative: when faithful beats fluent (IDs, amounts, low-quality scans), use PP-OCRv5.
 
 ## Licences and credits

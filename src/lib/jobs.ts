@@ -43,6 +43,8 @@ export interface PageJob {
   /** Output so far (streams in while running), or the user's edited text. */
   text: string;
   stage: string | null;
+  /** `Date.now()` when the run in progress started (shown ticking next to the stage); null otherwise. */
+  startedAt: number | null;
   ms: number | null;
   tokens: number | null;
   /** PP-OCRv5's segments (box + confidence) in `width × height` pixels; null for GLM-OCR. */
@@ -98,6 +100,7 @@ export function newPage(docId: string, index: number, region: Region | null = nu
     engine: null,
     mode: null,
     text: '',
+    startedAt: null,
     stage: null,
     ms: null,
     tokens: null,
@@ -182,8 +185,9 @@ export function findPage(docs: DocJob[], pageId: string | null): PageJob | null 
   return null;
 }
 
-export function firstQueued(docs: DocJob[]): PageJob | null {
-  for (const doc of docs) for (const page of doc.pages) if (page.state === 'queued') return page;
+/** The first page waiting to run, in document order; `except` skips one (the page being started). */
+export function firstQueued(docs: DocJob[], except: string | null = null): PageJob | null {
+  for (const doc of docs) for (const page of doc.pages) if (page.state === 'queued' && page.id !== except) return page;
   return null;
 }
 
