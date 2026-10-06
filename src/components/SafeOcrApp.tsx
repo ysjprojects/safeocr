@@ -109,10 +109,9 @@ const SafeOcrApp: FC = memo(() => {
   useTheme(settings.theme);
   const {mode, detail, sourceShown} = settings;
   // The stored engine preference, bounded by what this device can run; before a choice is made,
-  // GLM-OCR where it can run, PP-OCRv6 otherwise (PP-OCRv5 only when chosen).
-  const wantsGlm = settings.engine === 'glm' || (settings.engine === null && glm.ok === true);
+  // PP-OCRv6 (the recommended one, which runs everywhere). GLM-OCR and PP-OCRv5 only when chosen.
   const cpuEngine: PaddleEngineId = settings.engine === 'paddle' ? 'paddle' : 'paddle6';
-  const engine: Engine = wantsGlm && glm.ok !== false ? 'glm' : cpuEngine;
+  const engine: Engine = settings.engine === 'glm' && glm.ok !== false ? 'glm' : cpuEngine;
   const setEngine = useCallback((e: Engine) => updateSettings({engine: e}), [updateSettings]);
   const setMode = useCallback((m: Mode) => updateSettings({mode: m}), [updateSettings]);
   const setDetail = useCallback((d: Detail) => updateSettings({detail: d}), [updateSettings]);

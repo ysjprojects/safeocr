@@ -12,6 +12,7 @@ import {
   ENGINES,
   MODE_SPEC,
   MODES,
+  RECOMMENDED_ENGINE,
 } from '@/lib/protocol';
 
 import {FilePicker} from './Dropzone';
@@ -78,12 +79,15 @@ const Toolbar: FC<Props> = memo(
       <div className="border-surface0 bg-mantle flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 border-b px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="text-subtext0 text-xs">Engine</span>
+          {/* Fastest on the left, best on the right; the recommended one is marked. */}
+          <span className="text-overlay1 hidden text-[10px] uppercase tracking-wider sm:inline">fastest</span>
           <div aria-label="Engine" className="border-surface1 bg-base flex rounded-md border p-0.5" role="radiogroup">
             {ENGINES.map(e => (
               <EngineOption
                 engine={e}
                 key={e}
                 onSelect={onEngine}
+                recommended={e === RECOMMENDED_ENGINE}
                 running={running}
                 selected={engine === e}
                 status={status[e]}
@@ -91,6 +95,7 @@ const Toolbar: FC<Props> = memo(
               />
             ))}
           </div>
+          <span className="text-overlay1 hidden text-[10px] uppercase tracking-wider sm:inline">best quality</span>
         </div>
         {/* On phones the two selects share a row and stretch; from sm up the wrapper dissolves. */}
         <div className="flex w-full items-center gap-3 sm:contents">
@@ -205,25 +210,36 @@ const EngineOption: FC<{
   onSelect(engine: Engine): void;
   engine: Engine;
   selected: boolean;
+  recommended: boolean;
   running: boolean;
   /** Why the engine cannot run here, when it cannot. */
   unavailable: string | null;
   status: EngineStatus;
-}> = memo(({engine, selected, running, unavailable, status, onSelect}) => {
+}> = memo(({engine, selected, recommended, running, unavailable, status, onSelect}) => {
   const select = useCallback(() => onSelect(engine), [engine, onSelect]);
   return (
     <button
       aria-checked={selected}
-      className={`inline-flex items-center gap-2 rounded px-2.5 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`inline-flex items-center gap-2 whitespace-nowrap rounded px-2.5 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
         selected ? 'bg-surface0 text-text shadow-sm' : 'text-subtext0 hover:text-text'
       }`}
       disabled={running || unavailable !== null}
       onClick={select}
       role="radio"
-      title={unavailable ?? `${ENGINE_LABEL[engine]}: ${status.state === 'idle' ? 'not loaded' : status.state}`}
+      title={
+        unavailable ??
+        `${ENGINE_LABEL[engine]}${recommended ? ' (recommended)' : ''}: ${
+          status.state === 'idle' ? 'not loaded' : status.state
+        }`
+      }
       type="button">
       <span className={`h-1.5 w-1.5 rounded-full ${ENGINE_DOT[status.state]}`} />
       {ENGINE_LABEL[engine]}
+      {recommended ? (
+        <span className="bg-blue/15 text-blue hidden rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wider sm:inline">
+          recommended
+        </span>
+      ) : null}
     </button>
   );
 });

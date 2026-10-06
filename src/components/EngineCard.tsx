@@ -26,7 +26,7 @@ const BLURB: Record<Engine, {tagline: string; summary: string; runtime: string; 
     size: `${formatBytes(GLM_TOTAL_BYTES)} download, once`,
   },
   paddle6: {
-    tagline: 'Faithful, reads small print',
+    tagline: 'Recommended · faithful, reads small print',
     summary:
       'Classic detection + recognition: plain text lines in reading order, nothing invented. No layout: tables flatten into lines, formulas come out as symbols. Detects at full resolution.',
     runtime: 'CPU via WebAssembly · every browser · a few seconds per page',

@@ -180,8 +180,11 @@ export function paddleWorkers(): {workers: number; threads: number} {
   return {workers, threads};
 }
 
-/** The engines as offered, best first. */
-export const ENGINES: Engine[] = ['glm', 'paddle6', 'paddle'];
+/** The engines as offered: fastest first, best last. */
+export const ENGINES: Engine[] = ['paddle', 'paddle6', 'glm'];
+
+/** The default and recommended engine: faithful, reads small print, runs everywhere. */
+export const RECOMMENDED_ENGINE: Engine = 'paddle6';
 
 export const ENGINE_LABEL: Record<Engine, string> = {
   glm: 'GLM-OCR',
