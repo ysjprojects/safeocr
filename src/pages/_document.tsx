@@ -13,6 +13,12 @@ export default function Document() {
         <meta content="#1e66f5" name="theme-color" />
         <link href="/manifest.webmanifest" rel="manifest" />
         <link href="/icon.svg" rel="icon" type="image/svg+xml" />
+        {/* iOS ignores SVG manifest icons and needs its own flags to open as an app. */}
+        <link href="/apple-touch-icon.png" rel="apple-touch-icon" />
+        <meta content="yes" name="mobile-web-app-capable" />
+        <meta content="yes" name="apple-mobile-web-app-capable" />
+        <meta content="SafeOCR" name="apple-mobile-web-app-title" />
+        <meta content="black-translucent" name="apple-mobile-web-app-status-bar-style" />
         {/* Applies the saved or system theme before first paint; see lib/theme.ts. */}
         <script dangerouslySetInnerHTML={{__html: THEME_BOOT_SCRIPT}} />
         {/* A production run leaves a service worker on this origin; it must not serve the dev server. */}

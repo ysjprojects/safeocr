@@ -174,7 +174,7 @@ const ResultPane: FC<Props> = memo(
     const showExtras = linked || conversion === 'table' || conversion === 'formula';
 
     return (
-      <section className="bg-base flex shrink-0 flex-col lg:min-h-0 lg:flex-1">
+      <section className="bg-base flex shrink-0 flex-col lg:min-h-0 lg:min-w-0 lg:flex-1">
         <div className="border-surface0 bg-mantle flex h-10 shrink-0 items-center gap-3 overflow-hidden border-b pl-4 pr-2">
           <span className="text-subtext0 text-xs font-semibold uppercase tracking-wider">Text</span>
           {showTabs ? (
@@ -349,7 +349,7 @@ const ResultPane: FC<Props> = memo(
               {editing ? (
                 <textarea
                   aria-label="Edit the recognised text"
-                  className="font-code border-surface1 bg-mantle text-text focus:border-blue min-h-[16rem] w-full rounded-md border p-3 text-xs leading-relaxed focus:ring-0"
+                  className="font-code border-surface1 bg-mantle text-text focus:border-blue touch:text-md min-h-[16rem] w-full rounded-md border p-3 text-xs leading-relaxed focus:ring-0"
                   onChange={edit}
                   spellCheck={false}
                   value={page.text}

@@ -28,7 +28,7 @@ const Page: FC = memo(() => (
       {SITE_URL !== undefined ? <meta content={`${SITE_URL}/`} property="og:url" /> : null}
       <meta content={TITLE} name="twitter:title" />
       <meta content={DESCRIPTION} name="twitter:description" />
-      <meta content="width=device-width, initial-scale=1" name="viewport" />
+      <meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport" />
     </Head>
     <SafeOcrApp />
   </>

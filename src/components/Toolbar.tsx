@@ -91,40 +91,43 @@ const Toolbar: FC<Props> = memo(
             ))}
           </div>
         </div>
-        <label className="text-subtext0 flex items-center gap-2 text-xs">
-          Output
-          <select
-            className={selectClass}
-            disabled={engine !== 'glm' || running}
-            onChange={changeMode}
-            title={engine === 'glm' ? MODE_SPEC[mode].hint : 'PP-OCRv5 always returns plain text'}
-            value={engine === 'glm' ? mode : 'text'}>
-            {engine === 'glm' ? (
-              MODES.map(m => (
-                <option key={m} value={m}>
-                  {MODE_SPEC[m].label}
+        {/* On phones the two selects share a row and stretch; from sm up the wrapper dissolves. */}
+        <div className="flex w-full items-center gap-3 sm:contents">
+          <label className="text-subtext0 flex min-w-0 flex-1 items-center gap-2 text-xs sm:flex-none">
+            <span className="hidden sm:inline">Output</span>
+            <select
+              className={`${selectClass} min-w-0 flex-1 sm:flex-none`}
+              disabled={engine !== 'glm' || running}
+              onChange={changeMode}
+              title={engine === 'glm' ? MODE_SPEC[mode].hint : 'PP-OCRv5 always returns plain text'}
+              value={engine === 'glm' ? mode : 'text'}>
+              {engine === 'glm' ? (
+                MODES.map(m => (
+                  <option key={m} value={m}>
+                    {MODE_SPEC[m].label}
+                  </option>
+                ))
+              ) : (
+                <option value="text">Plain text</option>
+              )}
+            </select>
+          </label>
+          <label className="text-subtext0 flex min-w-0 flex-1 items-center gap-2 text-xs sm:flex-none">
+            <span className="hidden sm:inline">Detail</span>
+            <select
+              className={`${selectClass} min-w-0 flex-1 sm:flex-none`}
+              disabled={running}
+              onChange={changeDetail}
+              title="Pixel budget per page: lower is faster and needs less GPU memory"
+              value={detail}>
+              {DETAILS.map(d => (
+                <option key={d} value={d}>
+                  {DETAIL_LABEL[d]}
                 </option>
-              ))
-            ) : (
-              <option value="text">Plain text</option>
-            )}
-          </select>
-        </label>
-        <label className="text-subtext0 flex items-center gap-2 text-xs">
-          Detail
-          <select
-            className={selectClass}
-            disabled={running}
-            onChange={changeDetail}
-            title="Pixel budget per page: lower is faster and needs less GPU memory"
-            value={detail}>
-            {DETAILS.map(d => (
-              <option key={d} value={d}>
-                {DETAIL_LABEL[d]}
-              </option>
-            ))}
-          </select>
-        </label>
+              ))}
+            </select>
+          </label>
+        </div>
         <div className="ml-auto flex items-center gap-2">
           <FilePicker
             className={secondaryButtonClass}

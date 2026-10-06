@@ -46,14 +46,14 @@ const StatusBar: FC<Props> = memo(
       status.state === 'loading' && status.total > 0 ? Math.min(100, (100 * status.loaded) / status.total) : null;
 
     return (
-      <footer className="border-surface0 bg-mantle text-subtext0 relative flex h-9 shrink-0 items-center gap-4 overflow-hidden border-t pl-4 pr-2 text-xs">
+      <footer className="border-surface0 bg-mantle text-subtext0 relative flex min-h-9 shrink-0 items-center gap-4 overflow-hidden border-t pb-[env(safe-area-inset-bottom)] pl-4 pr-2 text-xs">
         {progress !== null ? (
           <div className="bg-blue absolute left-0 top-0 h-0.5 transition-[width]" style={{width: `${progress}%`}} />
         ) : null}
-        <span className="flex shrink-0 items-center gap-1.5">
-          <span className={`h-1.5 w-1.5 rounded-full ${ENGINE_DOT[status.state]}`} />
-          <span className="text-subtext1 font-medium">{ENGINE_LABEL[engine]}</span>
-          <span className="truncate">
+        <span className="flex min-w-0 shrink items-center gap-1.5">
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ENGINE_DOT[status.state]}`} />
+          <span className="text-subtext1 shrink-0 font-medium">{ENGINE_LABEL[engine]}</span>
+          <span className="min-w-0 truncate">
             {status.state === 'ready'
               ? 'ready'
               : status.state === 'loading'
@@ -69,6 +69,11 @@ const StatusBar: FC<Props> = memo(
         </span>
         <span className="hidden truncate sm:inline">
           {counts.done} done · {inProgress} in progress · {pending} pending
+        </span>
+        <span
+          className="shrink-0 sm:hidden"
+          title={`${counts.done} done · ${inProgress} in progress · ${pending} pending`}>
+          {counts.done}/{counts.done + inProgress + pending} done
         </span>
         {!isolated ? (
           <span

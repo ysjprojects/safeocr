@@ -22,7 +22,7 @@ yarn dev       # syncs the runtimes into public/ocr-runtime/ and starts Next.js 
 yarn build && yarn start
 ```
 
-Other scripts: `yarn compile` (tsc), `yarn lint` (prettier + eslint), `yarn ocr:sync` (run by `dev` and `build`; copies onnxruntime-web's WebAssembly runtime and pdf.js's worker, wasm decoders, CMaps and standard fonts from `node_modules` into `public/ocr-runtime/<lib>/<version>/`, git-ignored and served with immutable cache headers).
+Other scripts: `yarn compile` (tsc), `yarn lint` (prettier + eslint), `yarn ocr:sync` (run by `dev` and `build`; copies onnxruntime-web's WebAssembly runtime and pdf.js's worker, wasm decoders, CMaps and standard fonts from `node_modules` into `public/ocr-runtime/<lib>/<version>/`, git-ignored and served with immutable cache headers). `next build` and `next dev` share `.next/`: after a production build, `rm -rf .next` before going back to `yarn dev`, or the dev server can serve the build's server bundle (fonts and chunks then disagree). A production run also leaves a service worker on the origin; dev pages remove it on load.
 
 Environment (see `.env.example`):
 
@@ -62,7 +62,7 @@ scripts/sync-ocr-runtime.mjs copies the runtimes into public/ocr-runtime/
 
 Every page is downscaled to the chosen detail budget (0.75 / 1.5 / 2.5 MP) before the RGBA buffer is transferred to the worker; vision tokens, GPU memory and latency all scale with it, and the GLM processor enforces the same cap. GLM output is rendered with `react-markdown` + GFM + KaTeX behind `rehype-sanitize` (HTML tables allowed, images dropped, so an OCR'd page can never trigger a network request); the stored and downloaded text is exactly what the model produced.
 
-Run processes every page that has not succeeded yet. To process a subset, pick pages in the rail — click selects one, ⇧-click a range, ⌘/Ctrl-click adds or removes — and Run limits itself to the selection while a second button keeps "run everything" one click away; Esc or Deselect clears it. Pages that are done are never picked up by Run; they go through Rerun.
+Run processes every page that has not succeeded yet. To process a subset, pick pages in the rail — click selects one, ⇧-click a range, ⌘/Ctrl-click adds or removes; on touch screens, **Select** in the rail header makes taps add and remove — and Run limits itself to the selection while a second button keeps "run everything" one click away; Esc or Deselect clears it. Pages that are done are never picked up by Run; they go through Rerun. On phones the page list folds under its header and the scan arrows move between pages; the layout goes side by side from 1024 px.
 
 Settings (the gear) are per browser: the theme follows the system until chosen, engine / output / detail are remembered as they change, and "load on open" preloads the engine so the first run does not wait. The same panel shows what the app stores on the device and can delete the downloaded models. Any page that has run can be rerun (with a confirmation); its current result stays in place until the new run succeeds and is dropped then, so a failed or stopped rerun loses nothing.
 

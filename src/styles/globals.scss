@@ -46,7 +46,7 @@ body {
     }
 
     .katex-error {
-      font-family: var(--font-code), ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: theme('fontFamily.code');
       font-size: 0.85em;
     }
 

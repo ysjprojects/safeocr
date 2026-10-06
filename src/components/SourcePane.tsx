@@ -223,7 +223,7 @@ const SourcePane: FC<Props> = memo(
 
     return (
       <section
-        className="border-surface0 bg-crust flex shrink-0 flex-col border-b lg:min-h-0 lg:flex-1 lg:border-b-0 lg:border-r"
+        className="border-surface0 bg-crust flex shrink-0 flex-col border-b lg:min-h-0 lg:min-w-0 lg:flex-1 lg:border-b-0 lg:border-r"
         onKeyDown={onKeyDown}>
         <div className="border-surface0 bg-mantle flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b pl-4 pr-2">
           <span className="text-subtext0 text-xs font-semibold uppercase tracking-wider">Scan</span>

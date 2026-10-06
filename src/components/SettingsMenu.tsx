@@ -95,7 +95,7 @@ const SettingsMenu: FC<Props> = memo(({settings, engine, onChange, onDeleteModel
       {open ? (
         <div
           aria-label="Settings"
-          className="border-surface1 bg-base absolute right-0 top-full z-40 mt-2 flex w-80 flex-col gap-4 rounded-xl border p-4 shadow-xl"
+          className="border-surface1 bg-base absolute right-0 top-full z-40 mt-2 flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-4 rounded-xl border p-4 shadow-xl"
           role="dialog">
           <div className="flex items-center justify-between">
             <span className="text-text text-sm font-semibold">Settings</span>

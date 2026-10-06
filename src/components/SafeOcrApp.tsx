@@ -761,7 +761,7 @@ const SafeOcrApp: FC = memo(() => {
   return (
     <div className="safeocr bg-base text-text flex h-dvh flex-col overflow-hidden" {...handlers}>
       <DropOverlay active={dragging} />
-      <header className="border-surface0 bg-mantle flex h-12 shrink-0 items-center gap-3 border-b px-4">
+      <header className="border-surface0 bg-mantle flex min-h-12 shrink-0 items-center gap-3 border-b px-4 pt-[env(safe-area-inset-top)]">
         <span className="bg-blue text-crust flex h-6 w-6 items-center justify-center rounded-md">
           <Icon className="h-3.5 w-3.5" name="file" />
         </span>

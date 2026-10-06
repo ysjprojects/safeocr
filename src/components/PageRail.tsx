@@ -1,4 +1,4 @@
-import {type ChangeEvent, type FC, type KeyboardEvent, type MouseEvent, memo, useCallback} from 'react';
+import {type ChangeEvent, type FC, type KeyboardEvent, type MouseEvent, memo, useCallback, useState} from 'react';
 
 import {type DocJob, type PageJob, hasRun} from '@/lib/jobs';
 import {type Mode} from '@/lib/protocol';
@@ -55,8 +55,10 @@ const rowLabel = (doc: DocJob, page: PageJob): string => {
 /**
  * The page navigator: every document and its pages as thumbnails with their OCR state. An image is
  * one page, so it is a single row; a PDF (or an image with regions cut from it) is a heading with
- * one row per page. Clicking shows a page and selects it; ⇧ and ⌘/Ctrl build a selection, which
- * Run then limits itself to. A query dims the pages without hits and counts the hits on the rest.
+ * one row per page. Clicking shows a page and selects it; ⇧ and ⌘/Ctrl (or Select mode, for touch)
+ * build a selection, which Run then limits itself to. A query dims the pages without hits and
+ * counts the hits on the rest. Below the lg breakpoint the list folds away under its header so the
+ * scan and the text get the screen.
  */
 const PageRail: FC<Props> = memo(
   ({
@@ -75,6 +77,20 @@ const PageRail: FC<Props> = memo(
     onFiles,
     onQuery,
   }) => {
+    /** Below lg the body is folded by default; the scan arrows still move between pages. */
+    const [open, setOpen] = useState(false);
+    const toggleOpen = useCallback(() => setOpen(v => !v), []);
+    /** Taps add to or remove from the selection, for screens without ⌘/Ctrl. */
+    const [selectMode, setSelectMode] = useState(false);
+    const toggleSelectMode = useCallback(() => setSelectMode(v => !v), []);
+    const pick = useCallback(
+      (pageId: string, modifiers: SelectModifiers) => {
+        onSelect(pageId, {range: modifiers.range, toggle: modifiers.toggle || selectMode});
+        // A plain tap on a small screen is navigation: fold the list to show the page.
+        if (!modifiers.range && !modifiers.toggle && !selectMode) setOpen(false);
+      },
+      [onSelect, selectMode],
+    );
     const changeQuery = useCallback((event: ChangeEvent<HTMLInputElement>) => onQuery(event.target.value), [onQuery]);
     const keyQuery = useCallback(
       (event: KeyboardEvent<HTMLInputElement>) => {
@@ -97,118 +113,154 @@ const PageRail: FC<Props> = memo(
     const rowHits = (page: PageJob): number | null => (searching ? hits[page.id] ?? 0 : null);
     return (
       <aside className="border-surface0 bg-mantle flex shrink-0 select-none flex-col border-b lg:w-64 lg:border-b-0 lg:border-r">
-        <div className="flex h-10 shrink-0 items-center justify-between pl-4 pr-2">
-          <span className="text-subtext0 text-xs font-semibold uppercase tracking-wider">
+        <div className="flex h-10 shrink-0 items-center gap-1 pl-4 pr-2">
+          <span className="text-subtext0 min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider">
             {selection.size > 0 ? `${selection.size} of ${total} selected` : `${total} page${total === 1 ? '' : 's'}`}
           </span>
+          {total > 1 ? (
+            <button
+              aria-pressed={selectMode}
+              className={`${ghostButtonClass} ${open ? '' : 'hidden lg:inline-flex'} ${
+                selectMode ? 'bg-surface0 text-text' : ''
+              }`}
+              onClick={toggleSelectMode}
+              title={selectMode ? 'Stop picking pages' : 'Pick several pages by tapping them'}
+              type="button">
+              {selectMode ? 'Done' : 'Select'}
+            </button>
+          ) : null}
           {selection.size > 0 ? (
-            <button className={ghostButtonClass} onClick={onDeselect} title="Clear the selection (Esc)" type="button">
+            <button
+              className={`${ghostButtonClass} ${open ? '' : 'hidden lg:inline-flex'}`}
+              onClick={onDeselect}
+              title="Clear the selection (Esc)"
+              type="button">
               Deselect
             </button>
           ) : null}
-        </div>
-        {total > 0 ? (
-          <div className="shrink-0 px-2 pb-2">
-            <div className="relative">
-              <Icon
-                className="text-overlay1 pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
-                name="search"
-              />
-              <input
-                aria-label="Find in results"
-                className="border-surface1 bg-base text-text placeholder:text-overlay1 focus:border-blue w-full rounded-md py-1 pl-7 text-xs focus:ring-0"
-                onChange={changeQuery}
-                onKeyDown={keyQuery}
-                placeholder="Find in results"
-                type="search"
-                value={query}
-              />
-            </div>
-            {searching ? (
-              <p className="text-subtext0 pt-1 text-right text-[11px]">
-                {hitCount === 0
-                  ? 'No matches'
-                  : `${hitCount} hit${hitCount === 1 ? '' : 's'} on ${hitPages} page${hitPages === 1 ? '' : 's'}`}
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-        <ul className="flex max-h-56 min-h-0 flex-col gap-3 overflow-y-auto px-2 pb-2 lg:max-h-none lg:flex-1">
-          {docs.map(doc => (
-            <li key={doc.id}>
-              {doc.kind === 'image' && doc.pages.length === 1 ? (
-                <PageRow
-                  current={doc.pages[0].id === current}
-                  hits={rowHits(doc.pages[0])}
-                  label={doc.name}
-                  onRemove={onRemoveDoc}
-                  onRemovePage={onRemovePage}
-                  onRerun={onRerun}
-                  onSelect={onSelect}
-                  page={doc.pages[0]}
-                  selected={selection.has(doc.pages[0].id)}
-                />
-              ) : (
-                <>
-                  <div className="flex h-7 items-center gap-2 pl-2 pr-0.5">
-                    <Icon className="text-subtext0 h-3.5 w-3.5 shrink-0" name={doc.kind === 'pdf' ? 'file' : 'image'} />
-                    <span className="text-text min-w-0 flex-1 truncate text-xs font-semibold" title={doc.name}>
-                      {doc.name}
-                    </span>
-                    {doc.pages.length > 0 ? (
-                      <span className="text-subtext0 shrink-0 text-[11px]">
-                        {doc.pages.length} page{doc.pages.length === 1 ? '' : 's'}
-                      </span>
-                    ) : null}
-                    <RemoveButton id={doc.id} onRemove={onRemoveDoc} title="Remove" />
-                  </div>
-                  {doc.error !== null ? (
-                    <p className="font-code text-red break-words px-2 pb-1 text-[11px]">{doc.error}</p>
-                  ) : null}
-                  {doc.pages.length === 0 && doc.error === null ? (
-                    <p className="text-subtext0 px-2 pb-1 text-[11px]">opening…</p>
-                  ) : null}
-                  {doc.pages.length > 0 ? (
-                    <ul className="flex flex-col gap-0.5">
-                      {doc.pages.map(page => (
-                        <li key={page.id}>
-                          <PageRow
-                            current={page.id === current}
-                            hits={rowHits(page)}
-                            label={rowLabel(doc, page)}
-                            onRemovePage={onRemovePage}
-                            onRerun={onRerun}
-                            onSelect={onSelect}
-                            page={page}
-                            selected={selection.has(page.id)}
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-        {total > 1 && selection.size === 0 ? (
-          <p className="text-subtext0 px-4 pb-2 text-[11px] leading-relaxed">
-            Click a page to run just that one; ⇧-click for a range, ⌘/Ctrl-click to add or remove.
-          </p>
-        ) : null}
-        <div className="border-surface0 flex shrink-0 items-center gap-1 border-t p-2">
-          <FilePicker className={`${ghostButtonClass} flex-1`} onFiles={onFiles} title="Or drop files anywhere">
-            <Icon className="h-3.5 w-3.5" name="plus" />
-            Add files
-          </FilePicker>
           <button
-            aria-label="Remove all files"
-            className={iconButtonClass}
-            onClick={onRemoveAll}
-            title="Remove every file"
+            aria-expanded={open}
+            aria-label={open ? 'Hide the page list' : 'Show the page list'}
+            className={`${iconButtonClass} lg:hidden`}
+            onClick={toggleOpen}
+            title={open ? 'Hide the page list' : 'Show the page list'}
             type="button">
-            <Icon className="h-3.5 w-3.5" name="trash" />
+            <Icon className={`h-4 w-4 transition-transform ${open ? 'rotate-90' : ''}`} name="chevronRight" />
           </button>
+        </div>
+        <div className={`${open ? 'flex' : 'hidden lg:flex'} min-h-0 flex-col lg:flex-1`}>
+          {total > 0 ? (
+            <div className="shrink-0 px-2 pb-2">
+              <div className="relative">
+                <Icon
+                  className="text-overlay1 pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
+                  name="search"
+                />
+                <input
+                  aria-label="Find in results"
+                  className="border-surface1 bg-base text-text placeholder:text-overlay1 focus:border-blue touch:text-md w-full rounded-md py-1 pl-7 text-xs focus:ring-0"
+                  onChange={changeQuery}
+                  onKeyDown={keyQuery}
+                  placeholder="Find in results"
+                  type="search"
+                  value={query}
+                />
+              </div>
+              {searching ? (
+                <p className="text-subtext0 pt-1 text-right text-[11px]">
+                  {hitCount === 0
+                    ? 'No matches'
+                    : `${hitCount} hit${hitCount === 1 ? '' : 's'} on ${hitPages} page${hitPages === 1 ? '' : 's'}`}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          <ul className="flex max-h-56 min-h-0 flex-col gap-3 overflow-y-auto px-2 pb-2 lg:max-h-none lg:flex-1">
+            {docs.map(doc => (
+              <li key={doc.id}>
+                {doc.kind === 'image' && doc.pages.length === 1 ? (
+                  <PageRow
+                    current={doc.pages[0].id === current}
+                    hits={rowHits(doc.pages[0])}
+                    label={doc.name}
+                    onRemove={onRemoveDoc}
+                    onRemovePage={onRemovePage}
+                    onRerun={onRerun}
+                    onSelect={pick}
+                    page={doc.pages[0]}
+                    selected={selection.has(doc.pages[0].id)}
+                  />
+                ) : (
+                  <>
+                    <div className="flex h-7 items-center gap-2 pl-2 pr-0.5">
+                      <Icon
+                        className="text-subtext0 h-3.5 w-3.5 shrink-0"
+                        name={doc.kind === 'pdf' ? 'file' : 'image'}
+                      />
+                      <span className="text-text min-w-0 flex-1 truncate text-xs font-semibold" title={doc.name}>
+                        {doc.name}
+                      </span>
+                      {doc.pages.length > 0 ? (
+                        <span className="text-subtext0 shrink-0 text-[11px]">
+                          {doc.pages.length} page{doc.pages.length === 1 ? '' : 's'}
+                        </span>
+                      ) : null}
+                      <RemoveButton id={doc.id} onRemove={onRemoveDoc} title="Remove" />
+                    </div>
+                    {doc.error !== null ? (
+                      <p className="font-code text-red break-words px-2 pb-1 text-[11px]">{doc.error}</p>
+                    ) : null}
+                    {doc.pages.length === 0 && doc.error === null ? (
+                      <p className="text-subtext0 px-2 pb-1 text-[11px]">opening…</p>
+                    ) : null}
+                    {doc.pages.length > 0 ? (
+                      <ul className="flex flex-col gap-0.5">
+                        {doc.pages.map(page => (
+                          <li key={page.id}>
+                            <PageRow
+                              current={page.id === current}
+                              hits={rowHits(page)}
+                              label={rowLabel(doc, page)}
+                              onRemovePage={onRemovePage}
+                              onRerun={onRerun}
+                              onSelect={pick}
+                              page={page}
+                              selected={selection.has(page.id)}
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+          {total > 1 && selection.size === 0 && !selectMode ? (
+            <p className="text-subtext0 px-4 pb-2 text-[11px] leading-relaxed">
+              <span className="touch:hidden">
+                Click a page to run just that one; ⇧-click for a range, ⌘/Ctrl-click to add or remove.
+              </span>
+              <span className="touch:inline hidden">Tap a page to run just that one; Select picks several.</span>
+            </p>
+          ) : null}
+          {selectMode ? (
+            <p className="text-subtext0 px-4 pb-2 text-[11px] leading-relaxed">Tap pages to add or remove them.</p>
+          ) : null}
+          <div className="border-surface0 flex shrink-0 items-center gap-1 border-t p-2">
+            <FilePicker className={`${ghostButtonClass} flex-1`} onFiles={onFiles} title="Or drop files anywhere">
+              <Icon className="h-3.5 w-3.5" name="plus" />
+              Add files
+            </FilePicker>
+            <button
+              aria-label="Remove all files"
+              className={iconButtonClass}
+              onClick={onRemoveAll}
+              title="Remove every file"
+              type="button">
+              <Icon className="h-3.5 w-3.5" name="trash" />
+            </button>
+          </div>
         </div>
       </aside>
     );

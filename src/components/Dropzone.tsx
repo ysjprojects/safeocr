@@ -118,8 +118,12 @@ export const DropHero: FC<{onFiles: OnFiles; active: boolean}> = memo(({onFiles,
     </span>
     <span className="text-text text-lg font-semibold">Drop images or PDFs here</span>
     <span className="text-subtext0 text-sm">
-      or <span className="text-blue font-medium underline underline-offset-2">browse your files</span>, or paste a
-      screenshot with ⌘V / Ctrl+V
+      <span className="touch:hidden">or </span>
+      <span className="text-blue font-medium underline underline-offset-2">
+        <span className="touch:hidden">browse your files</span>
+        <span className="touch:inline hidden">Choose photos or files</span>
+      </span>
+      <span className="touch:hidden">, or paste a screenshot with ⌘V / Ctrl+V</span>
     </span>
     <span className="text-subtext0 text-xs">
       PNG, JPEG, WebP, GIF, BMP, AVIF and multi-page PDF · one file or a whole batch · nothing leaves this tab
@@ -134,7 +138,7 @@ export const DropOverlay: FC<{active: boolean}> = memo(({active}) =>
     <div className="bg-base/80 pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-6 backdrop-blur-sm">
       <div className="border-blue bg-blue/10 text-blue flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed px-12 py-10">
         <Icon className="h-8 w-8" name="upload" />
-        <span className="text-base font-semibold">Drop to add files</span>
+        <span className="text-md font-semibold">Drop to add files</span>
       </div>
     </div>
   ) : null,

@@ -16,8 +16,9 @@ export const ghostButtonClass = `${button} px-2.5 py-1.5 text-subtext1 hover:bg-
 
 export const iconButtonClass = `${button} h-7 w-7 text-subtext0 hover:bg-surface0 hover:text-text disabled:hover:bg-transparent`;
 
+/** Form controls: 16px on touch screens, where anything smaller makes iOS zoom the page on focus. */
 export const selectClass =
-  'rounded-md border-surface1 bg-base py-1 pl-2 pr-7 text-xs font-medium text-text focus:border-blue focus:ring-0 disabled:cursor-not-allowed disabled:opacity-50';
+  'rounded-md border-surface1 bg-base py-1 pl-2 pr-7 text-xs font-medium text-text focus:border-blue focus:ring-0 disabled:cursor-not-allowed disabled:opacity-50 touch:text-md';
 
 export const STATE_LABEL: Record<PageState, string> = {
   idle: 'ready to run',
