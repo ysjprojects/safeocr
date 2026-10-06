@@ -47,7 +47,7 @@ export async function probeGlmSupport(): Promise<GlmSupport> {
     return {
       ok: false,
       reason:
-        'This browser has no WebGPU. Use desktop Chrome or Edge (Safari 26+ and recent Firefox also work), or stay on PP-OCRv5.',
+        'This browser has no WebGPU. Use desktop Chrome or Edge (Safari 26+ and recent Firefox also work), or stay on PP-OCRv6.',
       warning: null,
     };
   }
@@ -55,7 +55,7 @@ export async function probeGlmSupport(): Promise<GlmSupport> {
     return {
       ok: false,
       reason:
-        'GLM-OCR needs about 2 GB of memory in one tab, more than Safari on iPhone and iPad allows: the page would be killed while the model loads. PP-OCRv5 runs here.',
+        'GLM-OCR needs about 2 GB of memory in one tab, more than Safari on iPhone and iPad allows: the page would be killed while the model loads. PP-OCRv6 runs here.',
       warning: null,
     };
   }
@@ -63,7 +63,7 @@ export async function probeGlmSupport(): Promise<GlmSupport> {
   if (memory !== null && memory < 4) {
     return {
       ok: false,
-      reason: `This device reports ${memory} GB of memory; GLM-OCR needs about 2 GB in one tab and would not fit. PP-OCRv5 runs here.`,
+      reason: `This device reports ${memory} GB of memory; GLM-OCR needs about 2 GB in one tab and would not fit. PP-OCRv6 runs here.`,
       warning: null,
     };
   }

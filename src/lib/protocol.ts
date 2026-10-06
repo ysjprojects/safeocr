@@ -3,8 +3,18 @@
  * downloads, and the messages between the page and the inference worker.
  */
 
-/** `glm` = GLM-OCR (0.9B VLM, WebGPU); `paddle` = PP-OCRv5 mobile det+rec (WebAssembly, any browser). */
-export type Engine = 'glm' | 'paddle';
+/**
+ * `glm` = GLM-OCR (0.9B VLM, WebGPU); `paddle6` = PP-OCRv6 small and `paddle` = PP-OCRv5 mobile,
+ * detection + recognition on the CPU (WebAssembly, any browser).
+ */
+export type Engine = 'glm' | 'paddle6' | 'paddle';
+
+/** The PP-OCR engines: `paddle` is the older, faster one, kept for the speed. */
+export type PaddleEngineId = Exclude<Engine, 'glm'>;
+
+export function isPaddle(engine: Engine): engine is PaddleEngineId {
+  return engine !== 'glm';
+}
 
 /** GLM-OCR answers exactly three prompts; PP-OCRv5 always returns plain text lines. */
 export type Mode = 'text' | 'table' | 'formula';
@@ -70,8 +80,8 @@ export const DETAIL_LABEL: Record<Detail, string> = {
 export interface AssetHosts {
   /** Transformers.js `env.remoteHost`: `<host>/<model>/resolve/<revision>/<file>` must resolve. */
   glmHost: string;
-  /** Directory URL (trailing slash) holding the PP-OCRv5 mobile files listed in `PADDLE_FILES`. */
-  paddleBase: string;
+  /** Host (trailing slash) laid out like huggingface.co, where `PADDLE_MODELS` paths resolve. */
+  paddleHost: string;
 }
 
 export const GLM_MODEL_ID = 'onnx-community/GLM-OCR-ONNX';
@@ -102,16 +112,80 @@ export function sum(values: Iterable<number>): number {
 
 export const GLM_TOTAL_BYTES = sum(Object.values(GLM_FILE_BYTES));
 
-export const PADDLE_FILES = {
-  det: {name: 'PP-OCRv5_mobile_det_infer.onnx', bytes: 4_819_576},
-  rec: {name: 'PP-OCRv5_mobile_rec_infer.onnx', bytes: 16_533_929},
-  dict: {name: 'ppocrv5_dict.txt', bytes: 74_013},
+export interface PaddleFile {
+  /** Path under the host: `<repo>/resolve/main/<file>`. */
+  path: string;
+  bytes: number;
+}
+
+export interface PaddleModels {
+  /** paddleocr.js's preset: detection thresholds and the dictionary layout. */
+  preset: 'PP-OCRv5_mobile' | 'PP-OCRv6_small';
+  det: PaddleFile;
+  rec: PaddleFile;
+  dict: PaddleFile;
+}
+
+/**
+ * The detection and recognition models of each PP-OCR engine. PP-OCRv6 comes as PaddlePaddle's own
+ * ONNX exports (its dictionary from the paddleocr.js bundle); PP-OCRv5 mobile from that bundle.
+ */
+export const PADDLE_MODELS: Record<PaddleEngineId, PaddleModels> = {
+  paddle6: {
+    preset: 'PP-OCRv6_small',
+    det: {path: 'PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx', bytes: 9_880_512},
+    rec: {path: 'PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx', bytes: 21_159_378},
+    dict: {path: 'x3zvawq/paddleocr-js-onnx/resolve/main/ppocr_v6_small/ppocrv6_dict.txt', bytes: 74_947},
+  },
+  paddle: {
+    preset: 'PP-OCRv5_mobile',
+    det: {
+      path: 'x3zvawq/paddleocr-js-onnx/resolve/main/ppocr_v5_mobile/PP-OCRv5_mobile_det_infer.onnx',
+      bytes: 4_819_576,
+    },
+    rec: {
+      path: 'x3zvawq/paddleocr-js-onnx/resolve/main/ppocr_v5_mobile/PP-OCRv5_mobile_rec_infer.onnx',
+      bytes: 16_533_929,
+    },
+    dict: {path: 'x3zvawq/paddleocr-js-onnx/resolve/main/ppocr_v5_mobile/ppocrv5_dict.txt', bytes: 74_013},
+  },
 };
 
-export const PADDLE_TOTAL_BYTES = sum([PADDLE_FILES.det.bytes, PADDLE_FILES.rec.bytes, PADDLE_FILES.dict.bytes]);
+export function paddleTotalBytes(engine: PaddleEngineId): number {
+  const {det, rec, dict} = PADDLE_MODELS[engine];
+  return det.bytes + rec.bytes + dict.bytes;
+}
+
+/**
+ * PP-OCR runs on the CPU and is small (~150 MB of memory per instance), so a batch spreads its
+ * pages over several workers, at most this many counting the main one.
+ */
+export const PADDLE_WORKERS = 8;
+const PADDLE_WORKER_GB = 0.15;
+
+/**
+ * How many PP-OCR workers this device gets, and the onnxruntime threads each runs with: one
+ * four-thread instance per four cores (fewer if memory is short). Four threads is where one
+ * instance peaks — on an M1 Pro (8+2 cores) 8 threads is slower than 4 — and a second instance
+ * then adds 17 % to a 14-page batch while a third, or eight single-threaded ones, add nothing:
+ * the parallel sections wait for whatever lands on the slower cores. Pages take longer each while
+ * sharing, so a lone page always has the main instance to itself.
+ */
+export function paddleWorkers(): {workers: number; threads: number} {
+  const cores = Math.max(1, navigator.hardwareConcurrency || 1);
+  const threads = Math.min(4, Math.ceil(cores / 2));
+  const memoryGb = (navigator as Navigator & {deviceMemory?: number}).deviceMemory ?? 4;
+  const byMemory = Math.floor(memoryGb / 4 / PADDLE_WORKER_GB); // a quarter of memory for the pool
+  const workers = Math.max(1, Math.min(PADDLE_WORKERS, Math.floor(cores / 4), byMemory));
+  return {workers, threads};
+}
+
+/** The engines as offered, best first. */
+export const ENGINES: Engine[] = ['glm', 'paddle6', 'paddle'];
 
 export const ENGINE_LABEL: Record<Engine, string> = {
   glm: 'GLM-OCR',
+  paddle6: 'PP-OCRv6',
   paddle: 'PP-OCRv5',
 };
 
@@ -146,7 +220,8 @@ export interface OcrSegment {
 }
 
 export type WorkerRequest =
-  | {kind: 'load'; engine: Engine; hosts: AssetHosts}
+  /** `threads` sets onnxruntime's thread count for this worker; it must come before anything loads. */
+  | {kind: 'load'; engine: Engine; hosts: AssetHosts; threads?: number}
   | {kind: 'run'; id: number; engine: Engine; mode: Mode; pixelBudget: number; image: PixelImage}
   | {kind: 'cancel'; id: number}
   | {kind: 'dispose'};

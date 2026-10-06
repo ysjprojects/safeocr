@@ -324,7 +324,9 @@ const SourcePane: FC<Props> = memo(
           {page.previewUrl === null ? (
             <div className="text-subtext0 flex h-full min-h-40 flex-col items-center justify-center gap-2 text-center text-xs">
               <Icon className="h-6 w-6" name="image" />
-              The page is rendered when it is processed.
+              {page.previewError === null
+                ? 'Rendering the page…'
+                : `The page could not be rendered: ${page.previewError}`}
             </div>
           ) : loaded === null ? (
             <img

@@ -47,13 +47,16 @@ export interface PageJob {
   startedAt: number | null;
   ms: number | null;
   tokens: number | null;
-  /** PP-OCRv5's segments (box + confidence) in `width × height` pixels; null for GLM-OCR. */
+  /** PP-OCR's segments (box + confidence) in `width × height` pixels; null for GLM-OCR. */
   segments: OcrSegment[] | null;
   /** The text was changed by hand after the run. */
   edited: boolean;
+  /** Set once the page is rendered: right after it arrives, or by its run if that comes first. */
   previewUrl: string | null;
   /** Quarter turns baked into `previewUrl` (0 for an image shown as dropped); the pane rotates the rest. */
   previewRotation: Rotation;
+  /** Why the page could not be rendered; a run tries again (and reports its own failure). */
+  previewError: string | null;
   /** Size of the pixels the model saw (after rotation, region and the pixel budget). */
   width: number | null;
   height: number | null;
@@ -108,6 +111,7 @@ export function newPage(docId: string, index: number, region: Region | null = nu
     edited: false,
     previewUrl: null,
     previewRotation: 0,
+    previewError: null,
     width: null,
     height: null,
     pointWidth: null,
@@ -121,10 +125,14 @@ export function newPage(docId: string, index: number, region: Region | null = nu
 }
 
 /** The fields a run fills in; `text` and friends are reset when a run starts. */
-export const RUN_START: Pick<PageJob, 'text' | 'stage' | 'error' | 'ms' | 'tokens' | 'segments' | 'edited'> = {
+export const RUN_START: Pick<
+  PageJob,
+  'text' | 'stage' | 'error' | 'previewError' | 'ms' | 'tokens' | 'segments' | 'edited'
+> = {
   text: '',
   stage: 'preparing the image',
   error: null,
+  previewError: null,
   ms: null,
   tokens: null,
   segments: null,
@@ -185,24 +193,20 @@ export function findPage(docs: DocJob[], pageId: string | null): PageJob | null 
   return null;
 }
 
-/** The first page waiting to run, in document order; `except` skips one (the page being started). */
-export function firstQueued(docs: DocJob[], except: string | null = null): PageJob | null {
-  for (const doc of docs) for (const page of doc.pages) if (page.state === 'queued' && page.id !== except) return page;
+const NONE: ReadonlySet<string> = new Set();
+
+/** The first page waiting to run, in document order; `exclude` skips pages already being started. */
+export function firstQueued(docs: DocJob[], exclude: ReadonlySet<string> = NONE): PageJob | null {
+  for (const doc of docs)
+    for (const page of doc.pages) if (page.state === 'queued' && !exclude.has(page.id)) return page;
   return null;
 }
 
-/**
- * Marks the pages `ids` names that have not succeeded as queued (Run on a selection); `null` means
- * every page (plain Run). Pages that are done stay as they are: those go through a rerun.
- */
-export function queuePages(docs: DocJob[], ids: ReadonlySet<string> | null): DocJob[] {
+/** Marks every page that has not succeeded as queued (plain Run); pages that are done stay as they are. */
+export function queuePending(docs: DocJob[]): DocJob[] {
   return docs.map(doc => ({
     ...doc,
-    pages: doc.pages.map(p =>
-      p.state === 'done' || p.state === 'running' || (ids !== null && !ids.has(p.id))
-        ? p
-        : {...p, state: 'queued', error: null},
-    ),
+    pages: doc.pages.map(p => (isPending(p) ? {...p, state: 'queued', error: null} : p)),
   }));
 }
 
@@ -229,26 +233,34 @@ export function hasRun(page: PageJob): boolean {
   return page.state === 'done' || page.state === 'error' || page.state === 'cancelled';
 }
 
-/** Queues one page that has run before, keeping its current result until the new run succeeds. */
-export function rerunPage(docs: DocJob[], pageId: string): DocJob[] {
-  return updatePage(docs, pageId, p =>
-    hasRun(p)
-      ? {
-          state: 'queued',
-          previous: {
-            state: p.state,
-            engine: p.engine,
-            mode: p.mode,
-            text: p.text,
-            ms: p.ms,
-            tokens: p.tokens,
-            segments: p.segments,
-            edited: p.edited,
-            error: p.error,
-          },
-        }
-      : {},
-  );
+/**
+ * Queues the pages `ids` names (Run or Rerun on a selection, Rerun on one page): a first run for
+ * those that never ran, a rerun for those that have — their result is kept until the new run
+ * succeeds. Pages in flight stay as they are.
+ */
+export function requeue(docs: DocJob[], ids: ReadonlySet<string>): DocJob[] {
+  return docs.map(doc => ({
+    ...doc,
+    pages: doc.pages.map(p => {
+      if (!ids.has(p.id) || p.state === 'queued' || p.state === 'running') return p;
+      if (!hasRun(p)) return {...p, state: 'queued', error: null};
+      return {
+        ...p,
+        state: 'queued',
+        previous: {
+          state: p.state,
+          engine: p.engine,
+          mode: p.mode,
+          text: p.text,
+          ms: p.ms,
+          tokens: p.tokens,
+          segments: p.segments,
+          edited: p.edited,
+          error: p.error,
+        },
+      };
+    }),
+  }));
 }
 
 /**

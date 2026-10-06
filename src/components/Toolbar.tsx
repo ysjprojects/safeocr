@@ -9,6 +9,7 @@ import {
   DETAIL_LABEL,
   DETAILS,
   ENGINE_LABEL,
+  ENGINES,
   MODE_SPEC,
   MODES,
 } from '@/lib/protocol';
@@ -16,8 +17,6 @@ import {
 import {FilePicker} from './Dropzone';
 import Icon from './icons';
 import {dangerButtonClass, ENGINE_DOT, primaryButtonClass, secondaryButtonClass, selectClass} from './paneShared';
-
-const ENGINES: Engine[] = ['glm', 'paddle'];
 
 interface Props {
   onEngine(engine: Engine): void;
@@ -35,9 +34,10 @@ interface Props {
   running: boolean;
   /** Pages a plain Run would process. */
   pending: number;
-  /** Pages picked in the rail, and how many of those Run would process. */
+  /** Pages picked in the rail: how many have not succeeded (a run) and how many have a result (a rerun). */
   selectedCount: number;
   selectedPending: number;
+  selectedDone: number;
 }
 
 /**
@@ -55,6 +55,7 @@ const Toolbar: FC<Props> = memo(
     pending,
     selectedCount,
     selectedPending,
+    selectedDone,
     onEngine,
     onMode,
     onDetail,
@@ -99,7 +100,7 @@ const Toolbar: FC<Props> = memo(
               className={`${selectClass} min-w-0 flex-1 sm:flex-none`}
               disabled={engine !== 'glm' || running}
               onChange={changeMode}
-              title={engine === 'glm' ? MODE_SPEC[mode].hint : 'PP-OCRv5 always returns plain text'}
+              title={engine === 'glm' ? MODE_SPEC[mode].hint : 'PP-OCR always returns plain text'}
               value={engine === 'glm' ? mode : 'text'}>
               {engine === 'glm' ? (
                 MODES.map(m => (
@@ -154,20 +155,26 @@ const Toolbar: FC<Props> = memo(
               ) : null}
               <button
                 className={primaryButtonClass}
-                disabled={selectedPending === 0}
+                disabled={selectedPending + selectedDone === 0}
                 onClick={onStartSelected}
                 title={
-                  selectedPending === 0
-                    ? 'The selected pages are done; use Rerun to process them again'
-                    : selectedPending < selectedCount
-                    ? `Run the ${selectedPending} selected page${
-                        selectedPending === 1 ? '' : 's'
-                      } that have not succeeded yet (the rest are done; use Rerun for those)`
-                    : `Run ${ENGINE_LABEL[engine]} on the selected page${selectedCount === 1 ? '' : 's'} (⌘⏎)`
+                  selectedPending + selectedDone === 0
+                    ? 'The selected pages are being processed'
+                    : selectedDone === 0
+                    ? `Run ${ENGINE_LABEL[engine]} on the selected page${selectedCount === 1 ? '' : 's'} (⌘⏎)`
+                    : selectedPending === 0
+                    ? `Process the selected page${selectedDone === 1 ? '' : 's'} again with ${
+                        ENGINE_LABEL[engine]
+                      }; each result is replaced once its new run succeeds (⌘⏎)`
+                    : `Run ${ENGINE_LABEL[engine]} on the selected pages: ${selectedDone} of them again, ${
+                        selectedPending === 1 ? 'one' : selectedPending
+                      } for the first time (⌘⏎)`
                 }
                 type="button">
-                <Icon className="h-3.5 w-3.5" name="play" />
-                {selectedPending > 0 ? `Run ${selectedPending} selected` : 'Run selected'}
+                <Icon className="h-3.5 w-3.5" name={selectedDone > 0 && selectedPending === 0 ? 'refresh' : 'play'} />
+                {selectedDone > 0 && selectedPending === 0
+                  ? `Rerun ${selectedDone} selected`
+                  : `Run ${selectedPending + selectedDone} selected`}
               </button>
             </>
           ) : (

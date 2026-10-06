@@ -1,7 +1,8 @@
 /**
  * Turns user files into RGBA pixels for the worker, on the main thread (decoders and pdf.js need
  * the DOM). Every page is downscaled to the active pixel budget before it leaves this module, which
- * bounds vision tokens, GPU memory and the transfer size; a small JPEG preview is produced alongside.
+ * bounds vision tokens, GPU memory and the transfer size; a small JPEG preview is produced alongside,
+ * or on its own for pages that are shown before they run.
  */
 import type * as PdfJs from 'pdfjs-dist';
 
@@ -24,8 +25,15 @@ export interface Rasterized {
   /** Physical size of the rotated page or region in PDF points (images are taken as 150 dpi). */
   pointWidth: number;
   pointHeight: number;
+  /** JPEG, at most `PREVIEW_MAX` on the long side; null when none was asked for. */
+  preview: Blob | null;
+}
+
+export interface Preview {
   /** JPEG, at most `PREVIEW_MAX` on the long side. */
-  preview: Blob;
+  blob: Blob;
+  pointWidth: number;
+  pointHeight: number;
 }
 
 let pdfModule: Promise<typeof PdfJs> | null = null;
@@ -40,10 +48,14 @@ function loadPdfJs(): Promise<typeof PdfJs> {
 }
 
 const documents = new WeakMap<File, Promise<PdfJs.PDFDocumentProxy>>();
+/** Pages of a PDF being rendered right now; a close asked for meanwhile waits for them. */
+const rendering = new WeakMap<File, number>();
+const closeWhenIdle = new WeakSet<File>();
 
 async function openPdf(file: File): Promise<PdfJs.PDFDocumentProxy> {
   let doc = documents.get(file);
   if (doc === undefined) {
+    closeWhenIdle.delete(file);
     doc = (async () => {
       const pdfjs = await loadPdfJs();
       const base = `${location.origin}/ocr-runtime/pdfjs/${pdfjs.version}/`;
@@ -69,12 +81,40 @@ export function isPdf(file: File): boolean {
   return file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
 }
 
-/** Releases a PDF's parsed state (its worker-side document) once all of its pages are done. */
+/**
+ * Releases a PDF's parsed state (its worker-side document); a later use opens it again. Deferred
+ * until the pages being rendered are done (previews are made while runs go on).
+ */
 export async function closePdf(file: File): Promise<void> {
+  if ((rendering.get(file) ?? 0) > 0) {
+    closeWhenIdle.add(file);
+    return;
+  }
+  closeWhenIdle.delete(file);
   const doc = documents.get(file);
   if (doc === undefined) return;
   documents.delete(file);
   await (await doc).destroy();
+}
+
+async function withPdfPage<T>(
+  file: File,
+  pageIndex: number,
+  body: (page: PdfJs.PDFPageProxy) => Promise<T>,
+): Promise<T> {
+  rendering.set(file, (rendering.get(file) ?? 0) + 1);
+  try {
+    const page = await (await openPdf(file)).getPage(pageIndex + 1);
+    try {
+      return await body(page);
+    } finally {
+      page.cleanup();
+    }
+  } finally {
+    const left = (rendering.get(file) ?? 1) - 1;
+    rendering.set(file, left);
+    if (left === 0 && closeWhenIdle.has(file)) void closePdf(file);
+  }
 }
 
 /** Scale factor that fits `width × height` within `pixelBudget` pixels (never upscales). */
@@ -105,70 +145,64 @@ export const WHOLE_PAGE: Transform = {rotation: 0, region: null};
 /** Images carry no physical size; a scan at 150 dpi is the convention for exports. */
 const IMAGE_DPI = 150;
 
-async function finish(
-  source: CanvasImageSource,
-  sourceWidth: number,
-  sourceHeight: number,
-  dpi: number,
-  pixelBudget: number,
-  transform: Transform,
-): Promise<Rasterized> {
+/** The part of the rotated source a transform keeps, in source pixels. */
+function cropOf(sourceWidth: number, sourceHeight: number, transform: Transform) {
   const turned = transform.rotation === 90 || transform.rotation === 270;
   const rotatedWidth = turned ? sourceHeight : sourceWidth;
   const rotatedHeight = turned ? sourceWidth : sourceHeight;
   const region = transform.region ?? {x: 0, y: 0, width: 1, height: 1};
-  const cropX = region.x * rotatedWidth;
-  const cropY = region.y * rotatedHeight;
-  const cropWidth = Math.max(1, region.width * rotatedWidth);
-  const cropHeight = Math.max(1, region.height * rotatedHeight);
+  return {
+    rotatedWidth,
+    rotatedHeight,
+    x: region.x * rotatedWidth,
+    y: region.y * rotatedHeight,
+    width: Math.max(1, region.width * rotatedWidth),
+    height: Math.max(1, region.height * rotatedHeight),
+  };
+}
 
-  const scale = fit(cropWidth, cropHeight, pixelBudget);
-  const width = Math.max(1, Math.round(cropWidth * scale));
-  const height = Math.max(1, Math.round(cropHeight * scale));
+type Crop = ReturnType<typeof cropOf>;
+
+/** Draws the rotated, cropped source at `scale` on a fresh white canvas. */
+function draw(
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  crop: Crop,
+  rotation: Transform['rotation'],
+  scale: number,
+): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  const width = Math.max(1, Math.round(crop.width * scale));
+  const height = Math.max(1, Math.round(crop.height * scale));
   const [canvas, ctx] = canvasOf(width, height);
   ctx.fillStyle = '#fff'; // transparent PNG/PDF backgrounds become paper, not black
   ctx.fillRect(0, 0, width, height);
-  // Output pixels ← budget scale ← crop offset ← rotation of the source onto the rotated frame.
+  // Output pixels ← scale ← crop offset ← rotation of the source onto the rotated frame.
   ctx.scale(scale, scale);
-  ctx.translate(-cropX, -cropY);
-  if (transform.rotation === 90) {
-    ctx.translate(rotatedWidth, 0);
+  ctx.translate(-crop.x, -crop.y);
+  if (rotation === 90) {
+    ctx.translate(crop.rotatedWidth, 0);
     ctx.rotate(Math.PI / 2);
-  } else if (transform.rotation === 180) {
-    ctx.translate(rotatedWidth, rotatedHeight);
+  } else if (rotation === 180) {
+    ctx.translate(crop.rotatedWidth, crop.rotatedHeight);
     ctx.rotate(Math.PI);
-  } else if (transform.rotation === 270) {
-    ctx.translate(0, rotatedHeight);
+  } else if (rotation === 270) {
+    ctx.translate(0, crop.rotatedHeight);
     ctx.rotate(-Math.PI / 2);
   }
   ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  const pixels = ctx.getImageData(0, 0, width, height);
+  return [canvas, ctx];
+}
 
-  const previewScale = Math.min(1, PREVIEW_MAX / Math.max(width, height));
-  const [previewCanvas, previewCtx] = canvasOf(
-    Math.max(1, Math.round(width * previewScale)),
-    Math.max(1, Math.round(height * previewScale)),
-  );
-  previewCtx.drawImage(canvas, 0, 0, previewCanvas.width, previewCanvas.height);
-  const preview = await new Promise<Blob>((resolve, reject) =>
-    previewCanvas.toBlob(
+function toJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob(
       blob => (blob === null ? reject(new Error('preview encoding failed')) : resolve(blob)),
       'image/jpeg',
       0.8,
     ),
   );
-  canvas.width = canvas.height = 0;
-  previewCanvas.width = previewCanvas.height = 0;
-
-  return {
-    image: {width, height, data: pixels.data.buffer},
-    width,
-    height,
-    pointWidth: (cropWidth / dpi) * 72,
-    pointHeight: (cropHeight / dpi) * 72,
-    preview,
-  };
 }
 
 async function decodeImage(file: File): Promise<[CanvasImageSource, number, number, () => void]> {
@@ -193,29 +227,27 @@ async function decodeImage(file: File): Promise<[CanvasImageSource, number, numb
 }
 
 /**
- * Rasterises page `pageIndex` (0-based; always 0 for images) within `pixelBudget` pixels, after
- * rotating and cropping it as `transform` says.
+ * Decodes an image, or renders page `pageIndex` of a PDF at 150 dpi (or less when `pixelBudget`
+ * would shrink it anyway: no point drawing pixels we would immediately throw away; a region only
+ * needs its own share of the page), and hands the source to `body` with its size and dpi.
  */
-export async function rasterize(
+async function withSource<T>(
   file: File,
   pageIndex: number,
   pixelBudget: number,
-  transform: Transform = WHOLE_PAGE,
-): Promise<Rasterized> {
+  transform: Transform,
+  body: (source: CanvasImageSource, width: number, height: number, dpi: number) => Promise<T>,
+): Promise<T> {
   if (!isPdf(file)) {
     const [source, width, height, release] = await decodeImage(file);
     try {
-      return await finish(source, width, height, IMAGE_DPI, pixelBudget, transform);
+      return await body(source, width, height, IMAGE_DPI);
     } finally {
       release();
     }
   }
-  const doc = await openPdf(file);
-  const page = await doc.getPage(pageIndex + 1);
-  try {
+  return withPdfPage(file, pageIndex, async page => {
     const base = page.getViewport({scale: 1});
-    // Render at 150 dpi, or less when the budget would shrink it anyway: no point drawing pixels we
-    // would immediately throw away. A region only needs its own share of the page to fit.
     const share = Math.sqrt(transform.region === null ? 1 : transform.region.width * transform.region.height);
     const scale = Math.min(
       PDF_SCALE,
@@ -227,11 +259,85 @@ export async function rasterize(
     const [canvas] = canvasOf(width, height);
     await page.render({canvas, viewport, intent: 'print'}).promise;
     try {
-      return await finish(canvas, width, height, scale * 72, pixelBudget, transform);
+      return await body(canvas, width, height, scale * 72);
     } finally {
       canvas.width = canvas.height = 0;
     }
-  } finally {
-    page.cleanup();
-  }
+  });
+}
+
+/**
+ * Rasterises page `pageIndex` (0-based; always 0 for images) within `pixelBudget` pixels, after
+ * rotating and cropping it as `transform` says; with a preview unless the page has one already.
+ */
+export async function rasterize(
+  file: File,
+  pageIndex: number,
+  pixelBudget: number,
+  transform: Transform = WHOLE_PAGE,
+  withPreview = true,
+): Promise<Rasterized> {
+  return withSource(file, pageIndex, pixelBudget, transform, async (source, sourceWidth, sourceHeight, dpi) => {
+    const crop = cropOf(sourceWidth, sourceHeight, transform);
+    const [canvas, ctx] = draw(
+      source,
+      sourceWidth,
+      sourceHeight,
+      crop,
+      transform.rotation,
+      fit(crop.width, crop.height, pixelBudget),
+    );
+    const {width, height} = canvas;
+    const pixels = ctx.getImageData(0, 0, width, height);
+    let preview: Blob | null = null;
+    if (withPreview) {
+      const previewScale = Math.min(1, PREVIEW_MAX / Math.max(width, height));
+      const [previewCanvas, previewCtx] = canvasOf(
+        Math.max(1, Math.round(width * previewScale)),
+        Math.max(1, Math.round(height * previewScale)),
+      );
+      previewCtx.drawImage(canvas, 0, 0, previewCanvas.width, previewCanvas.height);
+      preview = await toJpeg(previewCanvas);
+      previewCanvas.width = previewCanvas.height = 0;
+    }
+    canvas.width = canvas.height = 0;
+    return {
+      image: {width, height, data: pixels.data.buffer},
+      width,
+      height,
+      pointWidth: (crop.width / dpi) * 72,
+      pointHeight: (crop.height / dpi) * 72,
+      preview,
+    };
+  });
+}
+
+/** The preview alone, for a page shown before it runs: the same picture `rasterize` makes beside the pixels. */
+export async function renderPreview(
+  file: File,
+  pageIndex: number,
+  transform: Transform = WHOLE_PAGE,
+): Promise<Preview> {
+  return withSource(
+    file,
+    pageIndex,
+    PREVIEW_MAX * PREVIEW_MAX,
+    transform,
+    async (source, sourceWidth, sourceHeight, dpi) => {
+      const crop = cropOf(sourceWidth, sourceHeight, transform);
+      const [canvas] = draw(
+        source,
+        sourceWidth,
+        sourceHeight,
+        crop,
+        transform.rotation,
+        Math.min(1, PREVIEW_MAX / Math.max(crop.width, crop.height)),
+      );
+      try {
+        return {blob: await toJpeg(canvas), pointWidth: (crop.width / dpi) * 72, pointHeight: (crop.height / dpi) * 72};
+      } finally {
+        canvas.width = canvas.height = 0;
+      }
+    },
+  );
 }

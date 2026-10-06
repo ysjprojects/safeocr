@@ -1,7 +1,7 @@
 import {type ChangeEvent, type FC, type KeyboardEvent, type MouseEvent, memo, useCallback, useState} from 'react';
 
 import {type DocJob, type PageJob, hasRun} from '@/lib/jobs';
-import {type Mode} from '@/lib/protocol';
+import {type Mode, ENGINE_LABEL} from '@/lib/protocol';
 
 import {FilePicker} from './Dropzone';
 import Icon from './icons';
@@ -38,10 +38,10 @@ interface Props {
 /** Short mode suffix for a row's engine line; text mode is the default and goes unsaid. */
 const MODE_SUFFIX: Record<Mode, string> = {text: '', table: ' · Table', formula: ' · Formula'};
 
-/** `GLM · Table` / `PP-OCRv5`: what ran on the page, for its second line. */
+/** `GLM · Table` / `PP-OCRv6`: what ran on the page, for its second line. */
 const engineLabel = (page: PageJob): string | null => {
   if (page.engine === null) return null;
-  if (page.engine === 'paddle') return 'PP-OCRv5';
+  if (page.engine !== 'glm') return ENGINE_LABEL[page.engine];
   return `GLM${page.mode === null ? '' : MODE_SUFFIX[page.mode]}`;
 };
 

@@ -1,10 +1,22 @@
 /**
- * Main-thread handle on the inference worker. One worker per tab (it holds the models, which must
- * survive React remounts); engines load on demand and their status is observable; runs resolve
- * with the recognised text while streaming partial text to the caller.
+ * Main-thread handle on the inference workers. One main worker per tab (it holds the models, which
+ * must survive React remounts); engines load on demand and their status is observable; runs
+ * resolve with the recognised text while streaming partial text to the caller. PP-OCR runs are
+ * spread over extra workers (spawned on demand, up to `paddleWorkers()`), so a batch of pages runs
+ * in parallel on the CPU's cores; the main worker's instance takes the first of them.
  */
 import {resolveAssetHosts} from './assets';
-import type {Engine, Mode, OcrSegment, PixelImage, WorkerRequest, WorkerResponse} from './protocol';
+import {
+  type Engine,
+  type Mode,
+  type OcrSegment,
+  type PaddleEngineId,
+  type PixelImage,
+  type WorkerRequest,
+  type WorkerResponse,
+  isPaddle,
+  paddleWorkers,
+} from './protocol';
 
 export interface EngineStatus {
   state: 'idle' | 'loading' | 'ready' | 'error';
@@ -21,7 +33,7 @@ export type RunOutcome =
   | {kind: 'error'; message: string};
 
 export interface RunHandlers {
-  /** A decoded chunk of text (GLM-OCR streams words; PP-OCRv5 delivers everything at the end). */
+  /** A decoded chunk of text (GLM-OCR streams words; PP-OCR delivers everything at the end). */
   onToken?(text: string): void;
   /** Human-readable progress ("reading line 4 of 12"). */
   onStage?(message: string): void;
@@ -32,17 +44,37 @@ interface Pending {
   handlers: RunHandlers;
 }
 
+/** A worker and the runs it has in flight. */
+interface Lane {
+  worker: Worker;
+  pending: Map<number, Pending>;
+  /** Engines this worker has been told to load (a pool worker loads on its first run). */
+  loading: Set<Engine>;
+}
+
 type Listener = (status: Record<Engine, EngineStatus>) => void;
 
 const IDLE: EngineStatus = {state: 'idle', loaded: 0, total: 0, file: null, loadMs: null, message: null};
 
 export class OcrClient {
-  private worker: Worker | null = null;
-  private pending = new Map<number, Pending>();
+  /** The main worker: every engine, the status the page shows. */
+  private main: Lane | null = null;
+  /** The PP-OCR-only workers a batch spreads over. */
+  private pool: Lane[] = [];
+  private readonly sizing = paddleWorkers();
   private nextId = 1;
-  private status: Record<Engine, EngineStatus> = {glm: IDLE, paddle: IDLE};
+  private status: Record<Engine, EngineStatus> = {glm: IDLE, paddle6: IDLE, paddle: IDLE};
   private listeners = new Set<Listener>();
-  private loadWaiters: Record<Engine, {resolve(): void; reject(error: Error): void}[]> = {glm: [], paddle: []};
+  private loadWaiters: Record<Engine, {resolve(): void; reject(error: Error): void}[]> = {
+    glm: [],
+    paddle6: [],
+    paddle: [],
+  };
+
+  /** How many PP-OCR runs can go on at once. */
+  get paddleLanes(): number {
+    return this.sizing.workers;
+  }
 
   getStatus(): Record<Engine, EngineStatus> {
     return this.status;
@@ -63,11 +95,16 @@ export class OcrClient {
       this.loadWaiters[engine].push({resolve, reject});
       if (current.state === 'loading') return;
       this.update(engine, {...IDLE, state: 'loading'});
+      this.mainLane().loading.add(engine);
       this.post({kind: 'load', engine, hosts: resolveAssetHosts()});
     });
   }
 
-  /** Queues one image. The pixel buffer is transferred to the worker. */
+  /**
+   * Queues one image. The pixel buffer is transferred to the worker. A PP-OCR run goes to a
+   * worker with nothing in flight — the main one first, then the pool, growing it up to the
+   * device's share — and otherwise queues on the least busy.
+   */
   run(
     engine: Engine,
     mode: Mode,
@@ -79,64 +116,108 @@ export class OcrClient {
     outcome: Promise<RunOutcome>;
   } {
     const id = this.nextId++;
+    const lane = isPaddle(engine) ? this.paddleLane(engine) : this.mainLane();
     const outcome = new Promise<RunOutcome>(resolve => {
-      this.pending.set(id, {handlers, resolve});
-      this.post({kind: 'run', id, engine, mode, pixelBudget, image}, [image.data]);
+      lane.pending.set(id, {handlers, resolve});
+      lane.worker.postMessage({kind: 'run', id, engine, mode, pixelBudget, image} satisfies WorkerRequest, [
+        image.data,
+      ]);
     });
     return {id, outcome};
   }
 
   cancel(id: number): void {
-    if (!this.pending.has(id)) return;
-    this.post({kind: 'cancel', id});
-  }
-
-  /** Frees the models and the worker; the next call starts fresh. */
-  dispose(): void {
-    const worker = this.worker;
-    this.worker = null;
-    for (const [id, p] of this.pending) {
-      this.pending.delete(id);
-      p.resolve({kind: 'cancelled'});
+    for (const lane of this.lanes()) {
+      if (lane.pending.has(id)) lane.worker.postMessage({kind: 'cancel', id} satisfies WorkerRequest);
     }
-    this.status = {glm: IDLE, paddle: IDLE};
+  }
+
+  /** Frees the models and the workers; the next call starts fresh. */
+  dispose(): void {
+    const lanes = this.lanes();
+    this.main = null;
+    this.pool = [];
+    for (const lane of lanes) {
+      for (const [id, p] of lane.pending) {
+        lane.pending.delete(id);
+        p.resolve({kind: 'cancelled'});
+      }
+    }
+    this.status = {glm: IDLE, paddle6: IDLE, paddle: IDLE};
     this.emit();
-    if (worker === null) return;
-    worker.postMessage({kind: 'dispose'} satisfies WorkerRequest);
-    // Give the engines a moment to release GPU buffers before the worker goes away for good.
-    window.setTimeout(() => worker.terminate(), 1500);
+    for (const {worker} of lanes) {
+      worker.postMessage({kind: 'dispose'} satisfies WorkerRequest);
+      // Give the engines a moment to release GPU buffers before the worker goes away for good.
+      window.setTimeout(() => worker.terminate(), 1500);
+    }
   }
 
-  private post(request: WorkerRequest, transfer: Transferable[] = []): void {
-    this.spawn().postMessage(request, transfer);
+  private lanes(): Lane[] {
+    return this.main === null ? this.pool : [this.main, ...this.pool];
   }
 
-  private spawn(): Worker {
-    if (this.worker !== null) return this.worker;
+  private post(request: WorkerRequest): void {
+    this.mainLane().worker.postMessage(request);
+  }
+
+  private mainLane(): Lane {
+    this.main ??= this.spawn();
+    return this.main;
+  }
+
+  private paddleLane(engine: PaddleEngineId): Lane {
+    const main = this.mainLane();
+    let lane = main.pending.size === 0 ? main : this.pool.find(l => l.pending.size === 0);
+    if (lane === undefined && this.pool.length < this.sizing.workers - 1) {
+      lane = this.spawn();
+      this.pool.push(lane);
+    }
+    lane ??= this.lanes().reduce((best, l) => (l.pending.size < best.pending.size ? l : best));
+    // A pool worker loads the engine on its first run of it, quietly (the files are cached by then).
+    if (!lane.loading.has(engine)) {
+      lane.loading.add(engine);
+      lane.worker.postMessage({
+        kind: 'load',
+        engine,
+        hosts: resolveAssetHosts(),
+        threads: this.sizing.threads,
+      } satisfies WorkerRequest);
+    }
+    return lane;
+  }
+
+  private spawn(): Lane {
     // Named so the chunk is recognisable in the network panel and stable across builds.
     const worker = new Worker(new URL(/* webpackChunkName: "ocr-worker" */ './worker.ts', import.meta.url));
-    worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.onMessage(event.data);
+    const lane: Lane = {worker, pending: new Map(), loading: new Set()};
+    worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.onMessage(lane, event.data);
     worker.onerror = event => {
       // A script that could not be fetched (offline, stale deploy) reports no message at all.
       const message = `the OCR worker crashed: ${event.message || 'its script could not be loaded'}`;
-      for (const [id, p] of this.pending) {
-        this.pending.delete(id);
+      for (const [id, p] of lane.pending) {
+        lane.pending.delete(id);
         p.resolve({kind: 'error', message});
       }
-      for (const engine of ['glm', 'paddle'] as const) {
-        this.update(engine, {...IDLE, state: 'error', message});
-        this.settleLoad(engine, new Error(message));
-      }
       worker.terminate();
-      this.worker = null;
+      if (lane === this.main) {
+        this.main = null;
+        for (const engine of ['glm', 'paddle6', 'paddle'] as const) {
+          this.update(engine, {...IDLE, state: 'error', message});
+          this.settleLoad(engine, new Error(message));
+        }
+      } else {
+        this.pool = this.pool.filter(l => l !== lane);
+      }
     };
-    this.worker = worker;
-    return worker;
+    return lane;
   }
 
-  private onMessage(message: WorkerResponse): void {
+  private onMessage(lane: Lane, message: WorkerResponse): void {
     switch (message.kind) {
+      // The engine status is the main worker's; a pool worker loads quietly (from the cache) and
+      // a failure there surfaces in its runs.
       case 'load-progress':
+        if (lane !== this.main) return;
         this.update(message.engine, {
           ...this.status[message.engine],
           state: 'loading',
@@ -146,6 +227,7 @@ export class OcrClient {
         });
         return;
       case 'load-done':
+        if (lane !== this.main) return;
         this.update(message.engine, {
           ...this.status[message.engine],
           state: 'ready',
@@ -155,11 +237,12 @@ export class OcrClient {
         this.settleLoad(message.engine, null);
         return;
       case 'load-error':
+        if (lane !== this.main) return;
         this.update(message.engine, {...IDLE, state: 'error', message: message.message});
         this.settleLoad(message.engine, new Error(message.message));
         return;
     }
-    const p = this.pending.get(message.id);
+    const p = lane.pending.get(message.id);
     if (p === undefined) return;
     switch (message.kind) {
       case 'token':
@@ -169,7 +252,7 @@ export class OcrClient {
         p.handlers.onStage?.(message.message);
         return;
       case 'done':
-        this.pending.delete(message.id);
+        lane.pending.delete(message.id);
         p.resolve({
           kind: 'done',
           text: message.text,
@@ -179,11 +262,11 @@ export class OcrClient {
         });
         return;
       case 'error':
-        this.pending.delete(message.id);
+        lane.pending.delete(message.id);
         p.resolve({kind: 'error', message: message.message});
         return;
       case 'cancelled':
-        this.pending.delete(message.id);
+        lane.pending.delete(message.id);
         p.resolve({kind: 'cancelled'});
         return;
     }

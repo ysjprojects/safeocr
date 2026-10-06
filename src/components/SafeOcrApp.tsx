@@ -4,7 +4,7 @@ import {deleteModelCaches} from '@/lib/assets';
 import {getOcrClient} from '@/lib/client';
 import {type GlmSupport, GLM_UNKNOWN, probeGlmSupport} from '@/lib/device';
 import {download, outputName, zip} from '@/lib/export';
-import {type Rasterized, closePdf, countPages, isPdf, rasterize} from '@/lib/inputs';
+import {type Rasterized, closePdf, countPages, isPdf, rasterize, renderPreview} from '@/lib/inputs';
 import {
   type DocJob,
   type PageJob,
@@ -21,9 +21,9 @@ import {
   pageExtension,
   pageLabel,
   pageStem,
-  queuePages,
+  queuePending,
   removePage,
-  rerunPage,
+  requeue,
   RUN_START,
   textLines,
   unqueueAll,
@@ -35,9 +35,11 @@ import {
   type Engine,
   type Mode,
   type OcrSegment,
+  type PaddleEngineId,
   DETAIL_LABEL,
   DETAIL_PIXELS,
   ENGINE_LABEL,
+  isPaddle,
   MODE_SPEC,
 } from '@/lib/protocol';
 import {type SessionSummary, clearSession, loadSession, peekSession, saveSession} from '@/lib/session';
@@ -107,9 +109,10 @@ const SafeOcrApp: FC = memo(() => {
   useTheme(settings.theme);
   const {mode, detail, sourceShown} = settings;
   // The stored engine preference, bounded by what this device can run; before a choice is made,
-  // GLM-OCR where it can run.
+  // GLM-OCR where it can run, PP-OCRv6 otherwise (PP-OCRv5 only when chosen).
   const wantsGlm = settings.engine === 'glm' || (settings.engine === null && glm.ok === true);
-  const engine: Engine = wantsGlm && glm.ok !== false ? 'glm' : 'paddle';
+  const cpuEngine: PaddleEngineId = settings.engine === 'paddle' ? 'paddle' : 'paddle6';
+  const engine: Engine = wantsGlm && glm.ok !== false ? 'glm' : cpuEngine;
   const setEngine = useCallback((e: Engine) => updateSettings({engine: e}), [updateSettings]);
   const setMode = useCallback((m: Mode) => updateSettings({mode: m}), [updateSettings]);
   const setDetail = useCallback((d: Detail) => updateSettings({detail: d}), [updateSettings]);
@@ -119,9 +122,15 @@ const SafeOcrApp: FC = memo(() => {
   docsRef.current = docs;
   const settingsRef = useRef({engine, mode, detail});
   settingsRef.current = {engine, mode, detail};
+  /** The PP-OCR engine Compare runs against a GLM-OCR page: the one the user prefers. */
+  const cpuEngineRef = useRef(cpuEngine);
+  cpuEngineRef.current = cpuEngine;
   const runningRef = useRef(false);
   const loopActive = useRef(false);
-  const currentRun: Slot = useRef(null);
+  /** The runs of the batch, one slot per lane, so Stop and page removal can cancel them. */
+  const lanes = useRef<Slot[]>([]);
+  /** Pages a lane has picked but React has not yet marked running. */
+  const claimed = useRef(new Set<string>());
   const compareRun: Slot = useRef(null);
   /** Whether the result pane follows the page being processed (until the user picks one). */
   const follow = useRef(true);
@@ -183,8 +192,10 @@ const SafeOcrApp: FC = memo(() => {
   const stop = useCallback(() => {
     runningRef.current = false;
     setRunning(false);
-    const current = currentRun.current;
-    if (current !== null) client.cancel(current.runId);
+    for (const lane of lanes.current) {
+      const current = lane.current;
+      if (current !== null) client.cancel(current.runId);
+    }
     const compare = compareRun.current;
     if (compare !== null) client.cancel(compare.runId);
     setDocs(unqueueAll);
@@ -198,6 +209,9 @@ const SafeOcrApp: FC = memo(() => {
    */
   const prepared = useRef<{key: string; raster: Promise<Rasterized | null>} | null>(null);
 
+  /** A run makes a page's preview only when it has none, or one made before it was rotated. */
+  const needsPreview = (page: PageJob): boolean => page.previewUrl === null || page.previewRotation !== page.rotation;
+
   const rasterFor = useCallback(async (doc: DocJob, page: PageJob, budget: number): Promise<Rasterized> => {
     const key = rasterKey(page, budget);
     const ahead = prepared.current;
@@ -206,21 +220,78 @@ const SafeOcrApp: FC = memo(() => {
       const raster = await ahead.raster;
       if (raster !== null) return raster;
     }
-    return rasterize(doc.file, page.index, budget, {rotation: page.rotation, region: page.region});
+    return rasterize(doc.file, page.index, budget, {rotation: page.rotation, region: page.region}, needsPreview(page));
   }, []);
 
-  /** Starts rasterising the page that will run after `page`, if one is waiting. */
+  /** Starts rasterising the page that will run after `page`, if one is waiting (single-lane batches). */
   const prepareNext = useCallback((page: PageJob, budget: number) => {
-    if (!runningRef.current) return;
-    const next = firstQueued(docsRef.current, page.id);
+    if (!runningRef.current || lanes.current.length !== 1) return;
+    const next = firstQueued(docsRef.current, new Set([page.id, ...claimed.current]));
     const doc = next === null ? undefined : docsRef.current.find(d => d.id === next.docId);
     if (next === null || doc === undefined) return;
     prepared.current = {
       key: rasterKey(next, budget),
       // Not reported: a page that cannot be rasterised fails, for real, when its own turn comes.
-      raster: rasterize(doc.file, next.index, budget, {rotation: next.rotation, region: next.region}).catch(() => null),
+      raster: rasterize(
+        doc.file,
+        next.index,
+        budget,
+        {rotation: next.rotation, region: next.region},
+        needsPreview(next),
+      ).catch(() => null),
     };
   }, []);
+
+  /**
+   * Pages are rendered as they arrive, not only when they run: PDF pages (an image is shown as
+   * dropped), region pages, and whatever a restored session has no picture for. One at a time on
+   * this thread, the page on screen first and then in document order, with a tick between pages so
+   * the app stays responsive; a run meanwhile keeps the preview a page has.
+   */
+  const previewing = useRef(false);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const renderPreviews = useCallback(() => {
+    if (previewing.current) return;
+    const unrendered = (page: PageJob): boolean => page.previewUrl === null && page.previewError === null;
+    const onScreen = findPage(docsRef.current, selectedRef.current);
+    let page = onScreen !== null && unrendered(onScreen) ? onScreen : null;
+    for (const doc of docsRef.current) {
+      if (page !== null) break;
+      if (doc.error === null) page = doc.pages.find(unrendered) ?? null;
+    }
+    if (page === null) return;
+    const doc = docsRef.current.find(d => d.id === page.docId);
+    if (doc === undefined) return;
+    previewing.current = true;
+    const {id, index, rotation, region} = page;
+    renderPreview(doc.file, index, {rotation, region})
+      .then(
+        preview => {
+          const previewUrl = URL.createObjectURL(preview.blob);
+          setDocs(d => {
+            const current = findPage(d, id);
+            // Gone, or its run got there first (revoking twice, should React replay this, is harmless).
+            if (current === null || current.previewUrl !== null) {
+              URL.revokeObjectURL(previewUrl);
+              return d;
+            }
+            return updatePage(d, id, {
+              previewUrl,
+              previewRotation: rotation,
+              pointWidth: preview.pointWidth,
+              pointHeight: preview.pointHeight,
+            });
+          });
+        },
+        error => setDocs(d => updatePage(d, id, {previewError: errorMessage(error)})),
+      )
+      .finally(() => {
+        previewing.current = false;
+        window.setTimeout(renderPreviews, 0);
+      });
+  }, []);
+  useEffect(renderPreviews, [docs, selected, renderPreviews]);
 
   /**
    * One page through one engine: load it, rasterise the page as it is rotated and cropped (or take
@@ -261,15 +332,21 @@ const SafeOcrApp: FC = memo(() => {
     [client, rasterFor],
   );
 
+  /**
+   * Pages run through lanes: PP-OCR pages as many at a time as the client has workers for (each
+   * page on its own core), GLM-OCR one at a time. Each lane runs the usual sequence for its page
+   * and picks the next waiting one until none are left; the result pane follows the first lane.
+   */
   const pump = useCallback(async () => {
     if (loopActive.current) return;
     loopActive.current = true;
-    try {
+    const lane = async (slot: Slot, first: boolean): Promise<void> => {
       while (runningRef.current) {
-        const page = firstQueued(docsRef.current);
+        const page = firstQueued(docsRef.current, claimed.current);
         if (page === null) break;
         const doc = docsRef.current.find(d => d.id === page.docId);
         if (doc === undefined) continue;
+        claimed.current.add(page.id);
         const {engine: eng, mode: md, detail: dt} = settingsRef.current;
         const budget = DETAIL_PIXELS[dt];
 
@@ -282,30 +359,35 @@ const SafeOcrApp: FC = memo(() => {
             startedAt: Date.now(),
           }),
         );
-        if (follow.current) setSelected(page.id);
+        if (follow.current && first) setSelected(page.id);
 
-        const result = await runOnce(doc, page, eng, md, budget, currentRun, {
-          onRaster: raster => {
-            prepareNext(page, budget);
-            const previewUrl = URL.createObjectURL(raster.preview);
-            setDocs(d =>
-              updatePage(d, page.id, p => {
-                if (p.previewUrl !== null) URL.revokeObjectURL(p.previewUrl);
-                return {
-                  previewUrl,
-                  previewRotation: page.rotation,
-                  width: raster.width,
-                  height: raster.height,
-                  pointWidth: raster.pointWidth,
-                  pointHeight: raster.pointHeight,
-                  stage: eng === 'glm' ? 'encoding the image' : null,
-                };
-              }),
-            );
-          },
-          onToken: text => setDocs(d => updatePage(d, page.id, p => ({text: p.text + text, stage: null}))),
-          onStage: stage => setDocs(d => updatePage(d, page.id, {stage})),
-        });
+        let result: OneRun;
+        try {
+          result = await runOnce(doc, page, eng, md, budget, slot, {
+            onRaster: raster => {
+              prepareNext(page, budget);
+              const previewUrl = raster.preview === null ? null : URL.createObjectURL(raster.preview);
+              setDocs(d =>
+                updatePage(d, page.id, p => {
+                  const sizes = {
+                    width: raster.width,
+                    height: raster.height,
+                    pointWidth: raster.pointWidth,
+                    pointHeight: raster.pointHeight,
+                    stage: eng === 'glm' ? 'encoding the image' : null,
+                  };
+                  if (previewUrl === null) return sizes;
+                  if (p.previewUrl !== null) URL.revokeObjectURL(p.previewUrl);
+                  return {...sizes, previewUrl, previewRotation: page.rotation};
+                }),
+              );
+            },
+            onToken: text => setDocs(d => updatePage(d, page.id, p => ({text: p.text + text, stage: null}))),
+            onStage: stage => setDocs(d => updatePage(d, page.id, {stage})),
+          });
+        } finally {
+          claimed.current.delete(page.id);
+        }
         // Success replaces whatever the page had (a rerun's kept result included); anything else
         // puts a rerun back to that result.
         setDocs(d =>
@@ -328,20 +410,30 @@ const SafeOcrApp: FC = memo(() => {
               ),
         );
         // Without an engine nothing else will run either.
-        if (result.kind === 'error' && result.stage === 'load') break;
+        if (result.kind === 'error' && result.stage === 'load') {
+          runningRef.current = false;
+          break;
+        }
         // A PDF's parsed state can go once none of its pages are waiting; a rerun reopens it.
         if (isPdf(doc.file) && !docsRef.current.some(d => d.id === doc.id && d.pages.some(p => p.state === 'queued'))) {
           await closePdf(doc.file);
         }
       }
+    };
+    try {
+      const count = isPaddle(settingsRef.current.engine) ? client.paddleLanes : 1;
+      lanes.current = Array.from({length: count}, () => ({current: null}));
+      await Promise.all(lanes.current.map((slot, i) => lane(slot, i === 0)));
     } finally {
+      lanes.current = [];
+      claimed.current.clear();
       loopActive.current = false;
       prepared.current = null;
       runningRef.current = false;
       setRunning(false);
       setDocs(unqueueAll);
     }
-  }, [prepareNext, runOnce]);
+  }, [client, prepareNext, runOnce]);
 
   const launch = useCallback(() => {
     follow.current = true;
@@ -351,13 +443,9 @@ const SafeOcrApp: FC = memo(() => {
     window.setTimeout(() => void pump(), 0);
   }, [pump]);
   const start = useCallback(() => {
-    setDocs(d => queuePages(d, null));
+    setDocs(queuePending);
     launch();
   }, [launch]);
-  const startSelected = useCallback(() => {
-    setDocs(d => queuePages(d, selection));
-    launch();
-  }, [launch, selection]);
 
   const addFiles = useCallback((files: File[]) => {
     const added: DocJob[] = files.map(file => ({
@@ -374,7 +462,7 @@ const SafeOcrApp: FC = memo(() => {
       countPages(doc.file).then(
         pages => {
           if (!docsRef.current.some(x => x.id === doc.id)) return; // removed while it was being opened
-          // Images can be shown as dropped; PDF pages are rendered when they are processed.
+          // An image is shown as dropped; PDF pages are rendered next (renderPreviews).
           const previewUrl = doc.kind === 'image' ? URL.createObjectURL(doc.file) : null;
           setDocs(d =>
             d.map(x =>
@@ -392,7 +480,7 @@ const SafeOcrApp: FC = memo(() => {
   /** Cancels whichever request is working on one of `pageIds`. */
   const cancelRuns = useCallback(
     (pageIds: ReadonlySet<string>) => {
-      for (const slot of [currentRun, compareRun]) {
+      for (const slot of [...lanes.current, compareRun]) {
         const run = slot.current;
         if (run !== null && pageIds.has(run.pageId)) client.cancel(run.runId);
       }
@@ -479,19 +567,39 @@ const SafeOcrApp: FC = memo(() => {
   }, []);
   const deselect = useCallback(() => setSelection(new Set()), []);
 
-  /** Page waiting for the user to confirm a rerun. */
-  const [rerunTarget, setRerunTarget] = useState<string | null>(null);
-  const requestRerun = useCallback((pageId: string) => setRerunTarget(pageId), []);
-  const cancelRerun = useCallback(() => setRerunTarget(null), []);
+  /** Pages waiting for the user to confirm a rerun (one from its Rerun button, or a selection). */
+  const [rerunTargets, setRerunTargets] = useState<ReadonlySet<string> | null>(null);
+  const requestRerun = useCallback((pageId: string) => setRerunTargets(new Set([pageId])), []);
+  const cancelRerun = useCallback(() => setRerunTargets(null), []);
   const confirmRerun = useCallback(() => {
-    const pageId = rerunTarget;
-    setRerunTarget(null);
-    if (pageId === null) return;
-    setDocs(d => rerunPage(d, pageId));
+    const targets = rerunTargets;
+    setRerunTargets(null);
+    if (targets === null) return;
+    setDocs(d => requeue(d, targets));
     if (!runningRef.current) launch();
-  }, [launch, rerunTarget]);
-  const rerunCandidate = findPage(docs, rerunTarget);
-  const rerunDoc = rerunCandidate === null ? null : docs.find(d => d.id === rerunCandidate.docId) ?? null;
+  }, [launch, rerunTargets]);
+  /** What the confirmation is about: the pages with a result to replace, and the rest. */
+  const rerunPlan = useMemo(() => {
+    if (rerunTargets === null) return null;
+    const again: {doc: DocJob; page: PageJob}[] = [];
+    let fresh = 0;
+    for (const x of flat) {
+      if (!rerunTargets.has(x.page.id)) continue;
+      if (x.page.state === 'done') again.push(x);
+      else if (isPending(x.page)) fresh++;
+    }
+    return {again, fresh};
+  }, [flat, rerunTargets]);
+
+  /** Run on a selection: every selected page, after confirmation when any of them has a result. */
+  const startSelected = useCallback(() => {
+    if (flatRef.current.some(x => selection.has(x.page.id) && x.page.state === 'done')) {
+      setRerunTargets(selection);
+      return;
+    }
+    setDocs(d => requeue(d, selection));
+    launch();
+  }, [launch, selection]);
 
   /** Documents waiting for the user to confirm their removal (⌫ on a selection). */
   const [removeTargets, setRemoveTargets] = useState<string[] | null>(null);
@@ -529,7 +637,7 @@ const SafeOcrApp: FC = memo(() => {
       const {docs: next, page} = addRegion(docsRef.current, docId, index, rect);
       if (page === null) return;
       touched.current = true;
-      setDocs(queuePages(next, new Set([page.id])));
+      setDocs(requeue(next, new Set([page.id])));
       setSelected(page.id);
       if (!runningRef.current) launch();
       // The region is what the user is looking at; keep it on screen while it runs.
@@ -544,7 +652,7 @@ const SafeOcrApp: FC = memo(() => {
       const page = findPage(docsRef.current, pageId);
       const doc = page === null ? null : docsRef.current.find(d => d.id === page.docId) ?? null;
       if (page === null || doc === null || page.engine === null || compareRun.current !== null) return;
-      const other: Engine = page.engine === 'glm' ? 'paddle' : 'glm';
+      const other: Engine = page.engine === 'glm' ? cpuEngineRef.current : 'glm';
       const md = settingsRef.current.mode;
       const budget = DETAIL_PIXELS[settingsRef.current.detail];
       setComparing(true);
@@ -606,11 +714,17 @@ const SafeOcrApp: FC = memo(() => {
 
   const counts = useMemo(() => countByState(docs), [docs]);
   const pending = counts.idle + counts.error + counts.cancelled;
-  /** Selected pages Run would process; the rest of the selection is done or in flight. */
-  const selectedPending = useMemo(
-    () => flat.reduce((n, x) => (selection.has(x.page.id) && isPending(x.page) ? n + 1 : n), 0),
-    [flat, selection],
-  );
+  /** Selected pages that have not succeeded, and selected pages with a result (a rerun); the rest are in flight. */
+  const picked = useMemo(() => {
+    let pending = 0;
+    let done = 0;
+    for (const x of flat) {
+      if (!selection.has(x.page.id)) continue;
+      if (isPending(x.page)) pending++;
+      else if (x.page.state === 'done') done++;
+    }
+    return {pending, done};
+  }, [flat, selection]);
 
   /** Finished pages in scope: the selection when there is one, else everything. */
   const finished = useMemo(() => {
@@ -735,12 +849,12 @@ const SafeOcrApp: FC = memo(() => {
     [current, recognizeRegion],
   );
   const otherEngine: Engine | null =
-    current === null || current.page.engine === null ? null : current.page.engine === 'glm' ? 'paddle' : 'glm';
+    current === null || current.page.engine === null ? null : current.page.engine === 'glm' ? cpuEngine : 'glm';
   const canCompare =
     !comparing &&
     !running &&
     otherEngine !== null &&
-    (otherEngine === 'paddle' || glm.ok === true) &&
+    (otherEngine !== 'glm' || glm.ok === true) &&
     current !== null &&
     hasRun(current.page);
 
@@ -758,7 +872,7 @@ const SafeOcrApp: FC = memo(() => {
         next();
       } else if (event.key === 'Enter' && meta) {
         if (runningRef.current) return;
-        if (selection.size > 0 ? selectedPending > 0 : pending > 0) {
+        if (selection.size > 0 ? picked.pending + picked.done > 0 : pending > 0) {
           event.preventDefault();
           if (selection.size > 0) startSelected();
           else start();
@@ -776,7 +890,7 @@ const SafeOcrApp: FC = memo(() => {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [next, pending, prev, selectedPending, selection, start, startSelected]);
+  }, [next, pending, picked, prev, selection, start, startSelected]);
 
   const hideSource = useCallback(() => updateSettings({sourceShown: false}), [updateSettings]);
   const showSource = useCallback(() => updateSettings({sourceShown: true}), [updateSettings]);
@@ -815,7 +929,8 @@ const SafeOcrApp: FC = memo(() => {
         pending={pending}
         running={running}
         selectedCount={selection.size}
-        selectedPending={selectedPending}
+        selectedDone={picked.done}
+        selectedPending={picked.pending}
         status={status}
       />
 
@@ -901,22 +1016,61 @@ const SafeOcrApp: FC = memo(() => {
       />
 
       <ConfirmDialog
-        confirmLabel="Rerun page"
+        confirmLabel={
+          rerunPlan === null
+            ? 'Rerun page'
+            : rerunPlan.fresh > 0
+            ? `Run ${rerunPlan.again.length + rerunPlan.fresh} pages`
+            : rerunPlan.again.length === 1
+            ? 'Rerun page'
+            : `Rerun ${rerunPlan.again.length} pages`
+        }
         onCancel={cancelRerun}
         onConfirm={confirmRerun}
-        open={rerunCandidate !== null}
-        title="Rerun this page?">
-        {rerunCandidate !== null && rerunDoc !== null ? (
+        open={rerunPlan !== null && rerunPlan.again.length > 0}
+        title={
+          rerunPlan === null
+            ? 'Rerun this page?'
+            : rerunPlan.fresh > 0
+            ? `Rerun ${rerunPlan.again.length === 1 ? 'one' : rerunPlan.again.length} of the ${
+                rerunPlan.again.length + rerunPlan.fresh
+              } selected pages?`
+            : rerunPlan.again.length === 1
+            ? 'Rerun this page?'
+            : `Rerun ${rerunPlan.again.length} pages?`
+        }>
+        {rerunPlan !== null && rerunPlan.again.length > 0 ? (
           <>
             <p>
-              <span className="text-text font-medium">{pageLabel(rerunDoc, rerunCandidate)}</span> is processed again
+              {rerunPlan.again.length === 1 ? (
+                <>
+                  <span className="text-text font-medium">
+                    {pageLabel(rerunPlan.again[0].doc, rerunPlan.again[0].page)}
+                  </span>{' '}
+                  is processed again
+                </>
+              ) : (
+                <>
+                  <span className="text-text font-medium">{rerunPlan.again.length} pages</span> that have a result are
+                  processed again
+                </>
+              )}
+              {rerunPlan.fresh > 0
+                ? `, along with the ${rerunPlan.fresh === 1 ? 'one' : rerunPlan.fresh} selected ${
+                    rerunPlan.fresh === 1 ? 'page' : 'pages'
+                  } that ${rerunPlan.fresh === 1 ? 'has' : 'have'} none,`
+                : ''}{' '}
               with {ENGINE_LABEL[engine]}
               {engine === 'glm' ? ` · ${MODE_SPEC[mode].label}` : ''} · {DETAIL_LABEL[detail]}
               {running ? ', after the pages already queued' : ''}.
             </p>
             <p className="mt-2">
-              Its current result is replaced once the new run succeeds. If the run fails or is stopped, the current
-              result is kept.
+              {rerunPlan.again.length === 1 ? 'Its current result is' : 'Current results are'} replaced once the new run
+              succeeds.{' '}
+              {rerunPlan.again.length === 1
+                ? 'If the run fails or is stopped, the current result'
+                : 'A page whose run fails or is stopped keeps the result it'}{' '}
+              {rerunPlan.again.length === 1 ? 'is kept' : 'had'}.
             </p>
           </>
         ) : null}

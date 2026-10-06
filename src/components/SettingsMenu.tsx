@@ -178,7 +178,7 @@ const SettingsMenu: FC<Props> = memo(({settings, engine, onChange, onDeleteModel
         onConfirm={confirmDeletion}
         open={confirmDelete}
         title="Delete downloaded models?">
-        The GLM-OCR and PP-OCRv5 files are removed from this browser and the engines are unloaded. Any run in progress
+        The GLM-OCR and PP-OCR files are removed from this browser and the engines are unloaded. Any run in progress
         stops. The next run downloads what it needs again.
       </ConfirmDialog>
     </div>

@@ -4,7 +4,7 @@ import {type FC, memo} from 'react';
 
 const TITLE = 'SafeOCR — OCR that never leaves your browser';
 const DESCRIPTION =
-  'SafeOCR: private, in-browser OCR for images and PDFs. GLM-OCR runs on your GPU through WebGPU and returns Markdown, HTML tables and LaTeX formulas; PP-OCRv5 runs anywhere for fast, faithful plain text. Single files or whole batches, nothing uploaded.';
+  'SafeOCR: private, in-browser OCR for images and PDFs. GLM-OCR runs on your GPU through WebGPU and returns Markdown, HTML tables and LaTeX formulas; PP-OCRv6 runs anywhere for fast, faithful plain text. Single files or whole batches, nothing uploaded.';
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL;
 
 const loading = () => (

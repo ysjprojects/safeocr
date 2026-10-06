@@ -2,7 +2,7 @@ import {type FC, memo} from 'react';
 
 import type {EngineStatus} from '@/lib/client';
 import type {GlmSupport} from '@/lib/device';
-import type {Engine} from '@/lib/protocol';
+import {type Engine, ENGINES} from '@/lib/protocol';
 import type {SessionSummary} from '@/lib/session';
 
 import {DropHero} from './Dropzone';
@@ -75,36 +75,31 @@ const Welcome: FC<Props> = memo(
         <DropHero active={dragging} onFiles={onFiles} />
         <section className="flex flex-col gap-3">
           <h2 className="text-subtext0 text-xs font-semibold uppercase tracking-wider">Engine</h2>
-          <div aria-label="Engine" className="grid gap-3 md:grid-cols-2" role="radiogroup">
-            <EngineCard
-              engine="glm"
-              glm={glm}
-              onLoad={onLoad}
-              onSelect={onEngine}
-              selected={engine === 'glm'}
-              status={status.glm}
-            />
-            <EngineCard
-              engine="paddle"
-              glm={glm}
-              onLoad={onLoad}
-              onSelect={onEngine}
-              selected={engine === 'paddle'}
-              status={status.paddle}
-            />
+          <div aria-label="Engine" className="grid gap-3 md:grid-cols-3" role="radiogroup">
+            {ENGINES.map(id => (
+              <EngineCard
+                engine={id}
+                glm={glm}
+                key={id}
+                onLoad={onLoad}
+                onSelect={onEngine}
+                selected={engine === id}
+                status={status[id]}
+              />
+            ))}
           </div>
           {!isolated ? (
             <p className="border-yellow/40 bg-yellow/10 text-text flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-relaxed">
               <Icon className="text-yellow mt-0.5 h-3.5 w-3.5 shrink-0" name="alert" />
               This page is not cross-origin isolated (the server did not send the COOP/COEP headers from
-              next.config.js), so WebAssembly runs on one thread and PP-OCRv5 is slower than it could be.
+              next.config.js), so WebAssembly runs on one thread and PP-OCR is slower than it could be.
             </p>
           ) : null}
         </section>
         <p className="text-subtext0 flex items-start gap-2 text-xs leading-relaxed">
           <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" name="shield" />
           Nothing is uploaded. Models are downloaded once from huggingface.co and cached by your browser; every page is
-          processed on your own machine, in this tab. GLM-OCR is MIT-licensed, PP-OCRv5 Apache-2.0.
+          processed on your own machine, in this tab. GLM-OCR is MIT-licensed, PP-OCR Apache-2.0.
         </p>
       </div>
     </div>

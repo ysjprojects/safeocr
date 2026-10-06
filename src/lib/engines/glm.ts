@@ -11,6 +11,8 @@ import {
   AutoModelForImageTextToText,
   AutoProcessor,
   env,
+  Glm46VImageProcessor,
+  ImageProcessor,
   InterruptableStoppingCriteria,
   ModelRegistry,
   RawImage,
@@ -90,6 +92,63 @@ async function serveGraphs(patched: boolean): Promise<void> {
 
 /** The vision processor counts each pixel twice (temporal patch size 2) against `max_pixels`. */
 const TEMPORAL_PATCH_SIZE = 2;
+const PATCH_SIZE = 14;
+/** Values per patch: 3 channels × 2 temporal copies × 14 × 14. */
+const PATCH_VALUES = 3 * TEMPORAL_PATCH_SIZE * PATCH_SIZE * PATCH_SIZE;
+
+/**
+ * The image processor with its last step, the flattening of the [3, H, W] image into [patches,
+ * 1176] (2×2 merge groups row-major, each patch's values channel-major with the two temporal copies
+ * side by side), as plain loops: upstream goes through a nine-dimensional permute whose per-element
+ * index arithmetic takes a quarter of a second for a page.
+ * Same values in the same places (checked element for element against upstream).
+ */
+class PatchingImageProcessor extends Glm46VImageProcessor {
+  async _call(images: RawImage | RawImage[], ...args: unknown[]): ReturnType<Glm46VImageProcessor['_call']> {
+    // The base class: resize onto the 28-px grid within the pixel budget, rescale and normalize.
+    const {pixel_values, original_sizes, reshaped_input_sizes} = await ImageProcessor.prototype._call.call(
+      this,
+      images,
+      ...args,
+    );
+    const [batch, channels, height, width] = pixel_values.dims;
+    if (batch !== 1 || channels !== 3) throw new Error('the GLM-OCR processor expects one RGB image');
+    const source = pixel_values.data as Float32Array;
+    const gridH = height / PATCH_SIZE;
+    const gridW = width / PATCH_SIZE;
+    const patches = new Float32Array(gridH * gridW * PATCH_VALUES);
+    let patch = 0;
+    for (let groupRow = 0; groupRow < gridH / MERGE_SIZE; groupRow++) {
+      for (let groupColumn = 0; groupColumn < gridW / MERGE_SIZE; groupColumn++) {
+        for (let mergeRow = 0; mergeRow < MERGE_SIZE; mergeRow++) {
+          for (let mergeColumn = 0; mergeColumn < MERGE_SIZE; mergeColumn++) {
+            const base = patch++ * PATCH_VALUES;
+            const top = (groupRow * MERGE_SIZE + mergeRow) * PATCH_SIZE;
+            const left = (groupColumn * MERGE_SIZE + mergeColumn) * PATCH_SIZE;
+            for (let channel = 0; channel < 3; channel++) {
+              for (let row = 0; row < PATCH_SIZE; row++) {
+                const from = (channel * height + top + row) * width + left;
+                const first = base + (channel * TEMPORAL_PATCH_SIZE * PATCH_SIZE + row) * PATCH_SIZE;
+                const second = first + PATCH_SIZE * PATCH_SIZE;
+                for (let column = 0; column < PATCH_SIZE; column++) {
+                  const value = source[from + column];
+                  patches[first + column] = value;
+                  patches[second + column] = value;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return {
+      pixel_values: new Tensor('float32', patches, [gridH * gridW, PATCH_VALUES]),
+      image_grid_thw: new Tensor('int64', BigInt64Array.from([1n, BigInt(gridH), BigInt(gridW)]), [1, 3]),
+      original_sizes,
+      reshaped_input_sizes,
+    };
+  }
+}
 
 /** Removes the empty reasoning block the chat template reserves; GLM-OCR never fills it. */
 const THINK_PREFIX = /^\s*<think>\s*<\/think>\s*/;
@@ -181,6 +240,8 @@ export class GlmEngine {
       }),
     ]);
     if (processor.tokenizer === undefined) throw new Error('the GLM-OCR processor has no tokenizer');
+    if (!(processor.image_processor instanceof Glm46VImageProcessor)) throw new Error('the GLM-OCR processor changed');
+    processor.components.image_processor = new PatchingImageProcessor(processor.image_processor.config);
     const engine = new GlmEngine(processor, processor.tokenizer, model, patched);
     // Compiles the WebGPU shaders now, so the first real page does not pay for it.
     await engine.recognize(

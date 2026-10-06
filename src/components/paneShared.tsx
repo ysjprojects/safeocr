@@ -72,7 +72,7 @@ export const ENGINE_DOT: Record<EngineStatus['state'], string> = {
 };
 
 /**
- * Confidence bands for PP-OCRv5 lines: below `LOW` is worth a glance, below `VERY_LOW` a check.
+ * Confidence bands for PP-OCR lines: below `LOW` is worth a glance, below `VERY_LOW` a check.
  * The same thresholds colour text lines and the boxes on the scan.
  */
 export const CONFIDENCE = {LOW: 0.8, VERY_LOW: 0.6} as const;

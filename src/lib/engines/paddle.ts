@@ -1,13 +1,22 @@
 /**
- * PP-OCRv5 mobile (text detection + recognition, ~21 MB) through paddleocr.js on the WebAssembly
- * backend of the same onnxruntime-web instance Transformers.js uses. Deterministic and faithful:
- * it reads what is printed, line by line, and never invents text. Runs in every browser.
+ * PP-OCR (text detection + recognition; v6 small at ~31 MB, v5 mobile at ~21 MB) through
+ * paddleocr.js on the WebAssembly backend of the same onnxruntime-web instance Transformers.js
+ * uses. Deterministic and faithful: it reads what is printed, line by line, and never invents
+ * text. Runs in every browser.
  */
 import * as ort from 'onnxruntime-web/webgpu';
 import {type OrtModule, type RecognitionResult, PaddleOcrService} from 'paddleocr';
 
 import {fetchCached} from '../assets';
-import {type AssetHosts, type OcrSegment, type PixelImage, PADDLE_FILES, PADDLE_TOTAL_BYTES, sum} from '../protocol';
+import {
+  type AssetHosts,
+  type OcrSegment,
+  type PaddleEngineId,
+  type PixelImage,
+  PADDLE_MODELS,
+  paddleTotalBytes,
+  sum,
+} from '../protocol';
 import type {LoadProgress} from './glm';
 
 /**
@@ -26,27 +35,33 @@ const ortModule = {
 export class PaddleEngine {
   private constructor(private readonly service: PaddleOcrService) {}
 
-  static async load(hosts: AssetHosts, onProgress: (progress: LoadProgress) => void): Promise<PaddleEngine> {
+  static async load(
+    hosts: AssetHosts,
+    engine: PaddleEngineId,
+    onProgress: (progress: LoadProgress) => void,
+  ): Promise<PaddleEngine> {
+    const models = PADDLE_MODELS[engine];
+    const totalBytes = paddleTotalBytes(engine);
     const loadedByFile: Record<string, number> = {};
-    const report = (name: string) => (loaded: number) => {
-      loadedByFile[name] = loaded;
-      const total = sum(Object.values(loadedByFile));
-      onProgress({loaded: Math.min(total, PADDLE_TOTAL_BYTES), total: PADDLE_TOTAL_BYTES, file: name});
+    const fetchFile = (file: {path: string}) => {
+      const name = file.path.slice(file.path.lastIndexOf('/') + 1);
+      return fetchCached(`${hosts.paddleHost}${file.path}`, loaded => {
+        loadedByFile[file.path] = loaded;
+        const total = sum(Object.values(loadedByFile));
+        onProgress({loaded: Math.min(total, totalBytes), total: totalBytes, file: name});
+      });
     };
-    const [det, rec, dict] = await Promise.all([
-      fetchCached(`${hosts.paddleBase}${PADDLE_FILES.det.name}`, report(PADDLE_FILES.det.name)),
-      fetchCached(`${hosts.paddleBase}${PADDLE_FILES.rec.name}`, report(PADDLE_FILES.rec.name)),
-      fetchCached(`${hosts.paddleBase}${PADDLE_FILES.dict.name}`, report(PADDLE_FILES.dict.name)),
-    ]);
-    // PaddleOCR's CTC layout: the blank (this bundle's dictionary starts with an empty line), the
+    const [det, rec, dict] = await Promise.all([fetchFile(models.det), fetchFile(models.rec), fetchFile(models.dict)]);
+    // PaddleOCR's CTC layout: the blank (the dictionaries start with an empty line), the
     // characters, then the space the recogniser's last output class stands for. paddleocr.js maps
-    // output indices straight onto this array, so the length must match the model's 18 385 classes.
+    // output indices straight onto this array, so the length must match the model's classes
+    // (18 385 for v5, 18 710 for v6).
     const characters = new TextDecoder().decode(dict).split(/\r?\n/);
     if (characters[characters.length - 1] === '') characters.pop();
     characters.push(' ');
     const service = await PaddleOcrService.createInstance({
       ort: ortModule,
-      modelPreset: 'PP-OCRv5_mobile',
+      modelPreset: models.preset,
       detection: {modelBuffer: det},
       recognition: {modelBuffer: rec, charactersDictionary: characters},
     });

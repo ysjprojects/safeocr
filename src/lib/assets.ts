@@ -1,6 +1,6 @@
 /**
  * Model and runtime asset locations, plus a Cache API-backed fetch for the files Transformers.js
- * does not manage (the PP-OCRv5 ONNX models). Runs in the worker.
+ * does not manage (the PP-OCR ONNX models). Runs in the worker.
  */
 import type {AssetHosts} from './protocol';
 
@@ -13,15 +13,12 @@ import type {AssetHosts} from './protocol';
 export function resolveAssetHosts(): AssetHosts {
   const configured = process.env.NEXT_PUBLIC_SAFEOCR_MODEL_HOST || 'https://huggingface.co/';
   const host = configured.endsWith('/') ? configured : `${configured}/`;
-  return {
-    glmHost: host,
-    paddleBase: `${host}x3zvawq/paddleocr-js-onnx/resolve/main/ppocr_v5_mobile/`,
-  };
+  return {glmHost: host, paddleHost: host};
 }
 
 const CACHE_NAME = 'safeocr-models';
 
-/** Every Cache API bucket holding model files: ours (PP-OCRv5) and Transformers.js's (GLM-OCR). */
+/** Every Cache API bucket holding model files: ours (PP-OCR) and Transformers.js's (GLM-OCR). */
 const MODEL_CACHES = [CACHE_NAME, 'transformers-cache'];
 
 /** Deletes the downloaded models from this browser; the next load downloads them again. */

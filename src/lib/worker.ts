@@ -1,7 +1,8 @@
 /**
  * Inference worker: owns the engines (loaded on demand, once per tab) and runs every OCR request
  * off the UI thread, one at a time. Tokens stream back as they are decoded; a cancel flips a flag
- * the running job polls. Nothing here touches the network except for model downloads.
+ * the running job polls. Nothing here touches the network except for model downloads. The client
+ * runs several of these for PP-OCR batches (the extra ones load that engine only).
  */
 import {env} from '@huggingface/transformers';
 import * as ort from 'onnxruntime-web/webgpu';
@@ -9,7 +10,15 @@ import * as ort from 'onnxruntime-web/webgpu';
 import {GlmEngine} from './engines/glm';
 import {PaddleEngine} from './engines/paddle';
 import {webgpuLoaderUrl} from './ortLoader';
-import type {AssetHosts, Engine, OcrSegment, WorkerRequest, WorkerResponse} from './protocol';
+import {
+  type AssetHosts,
+  type Engine,
+  type OcrSegment,
+  type PaddleEngineId,
+  type WorkerRequest,
+  type WorkerResponse,
+  ENGINE_LABEL,
+} from './protocol';
 
 interface WorkerScope {
   postMessage(message: WorkerResponse, transfer?: Transferable[]): void;
@@ -24,7 +33,10 @@ interface Slot<E> {
 }
 
 const glm: Slot<GlmEngine> = {engine: null, pending: null};
-const paddle: Slot<PaddleEngine> = {engine: null, pending: null};
+const paddles: Record<PaddleEngineId, Slot<PaddleEngine>> = {
+  paddle6: {engine: null, pending: null},
+  paddle: {engine: null, pending: null},
+};
 
 /** One request at a time: the WebAssembly/WebGPU runtime does not run sessions concurrently. */
 let chain: Promise<void> = Promise.resolve();
@@ -36,9 +48,11 @@ const cancelled = new Set<number>();
 /** Errors after which the GPU session is unusable; the next request rebuilds the engine. */
 const FATAL = /device lost|out of memory|OOM|destroyed|webgpu/i;
 
-function configureRuntime(): void {
+function configureRuntime(threads: number | undefined): void {
   if (runtimeConfigured) return;
   runtimeConfigured = true;
+  // onnxruntime's thread pool is sized once, when its WebAssembly module initialises.
+  if (threads !== undefined) ort.env.wasm.numThreads = threads;
   // Both engines share this onnxruntime-web instance (Transformers.js imports the same module), so
   // one path setting serves both; it points at public/ocr-runtime/ort/<version>/ (synced from
   // node_modules at build time) instead of the jsDelivr default. The loader goes through
@@ -69,15 +83,21 @@ function loadSlot<E>(slot: Slot<E>, engine: Engine, start: () => Promise<E>): Pr
   return slot.pending;
 }
 
-async function load(engine: Engine, hosts: AssetHosts): Promise<void> {
-  configureRuntime();
+/** Why the last load of an engine failed, for the runs that then find it missing. */
+const loadErrors: Record<Engine, string | null> = {glm: null, paddle6: null, paddle: null};
+
+async function load(engine: Engine, hosts: AssetHosts, threads: number | undefined): Promise<void> {
+  configureRuntime(threads);
   const onProgress = (p: {loaded: number; total: number; file: string}) =>
     scope.postMessage({kind: 'load-progress', engine, loaded: p.loaded, total: p.total, file: p.file});
   try {
     if (engine === 'glm') await loadSlot(glm, engine, () => GlmEngine.load(hosts, onProgress));
-    else await loadSlot(paddle, engine, () => PaddleEngine.load(hosts, onProgress));
+    else await loadSlot(paddles[engine], engine, () => PaddleEngine.load(hosts, engine, onProgress));
+    loadErrors[engine] = null;
   } catch (error) {
-    scope.postMessage({kind: 'load-error', engine, message: error instanceof Error ? error.message : String(error)});
+    const message = error instanceof Error ? error.message : String(error);
+    loadErrors[engine] = message;
+    scope.postMessage({kind: 'load-error', engine, message});
   }
 }
 
@@ -93,7 +113,7 @@ async function run(request: Extract<WorkerRequest, {kind: 'run'}>): Promise<void
     let tokens: number;
     let segments: OcrSegment[] | null = null;
     if (engine === 'glm') {
-      if (glm.engine === null) throw new Error('GLM-OCR is not loaded');
+      if (glm.engine === null) throw new Error(loadErrors.glm ?? 'GLM-OCR is not loaded');
       ({text, tokens} = await glm.engine.recognize(
         image,
         mode,
@@ -102,8 +122,9 @@ async function run(request: Extract<WorkerRequest, {kind: 'run'}>): Promise<void
         () => cancelled.has(id),
       ));
     } else {
-      if (paddle.engine === null) throw new Error('PP-OCRv5 is not loaded');
-      const result = await paddle.engine.recognize(image, message => scope.postMessage({kind: 'stage', id, message}));
+      const paddle = paddles[engine].engine;
+      if (paddle === null) throw new Error(loadErrors[engine] ?? `${ENGINE_LABEL[engine]} is not loaded`);
+      const result = await paddle.recognize(image, message => scope.postMessage({kind: 'stage', id, message}));
       text = result.text;
       tokens = result.lines;
       segments = result.segments;
@@ -113,8 +134,10 @@ async function run(request: Extract<WorkerRequest, {kind: 'run'}>): Promise<void
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (engine === 'glm' && FATAL.test(message)) {
+      // The page keeps the engine marked ready otherwise, and every later run would fail.
       const broken = glm.engine;
       glm.engine = null;
+      scope.postMessage({kind: 'load-error', engine, message});
       await broken?.dispose().catch(() => undefined);
     }
     scope.postMessage({kind: 'error', id, message});
@@ -125,9 +148,9 @@ async function run(request: Extract<WorkerRequest, {kind: 'run'}>): Promise<void
 }
 
 async function dispose(): Promise<void> {
-  const engines = [glm.engine, paddle.engine];
+  const engines = [glm.engine, ...Object.values(paddles).map(slot => slot.engine)];
   glm.engine = null;
-  paddle.engine = null;
+  for (const slot of Object.values(paddles)) slot.engine = null;
   await Promise.all(engines.map(engine => engine?.dispose().catch(() => undefined)));
 }
 
@@ -135,7 +158,7 @@ scope.onmessage = event => {
   const request = event.data;
   switch (request.kind) {
     case 'load':
-      chain = chain.then(() => load(request.engine, request.hosts));
+      chain = chain.then(() => load(request.engine, request.hosts, request.threads));
       break;
     case 'run':
       active.add(request.id);

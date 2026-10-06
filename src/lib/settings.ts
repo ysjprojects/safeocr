@@ -52,7 +52,7 @@ export function readSettings(): Settings {
     typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {};
   return {
     theme: oneOf(THEME_SETTINGS, s.theme, DEFAULT_SETTINGS.theme),
-    engine: s.engine === 'glm' || s.engine === 'paddle' ? s.engine : DEFAULT_SETTINGS.engine,
+    engine: s.engine === 'glm' || s.engine === 'paddle6' || s.engine === 'paddle' ? s.engine : DEFAULT_SETTINGS.engine,
     mode: oneOf(MODES, s.mode, DEFAULT_SETTINGS.mode),
     detail: oneOf(DETAILS, s.detail, DEFAULT_SETTINGS.detail),
     sourceShown: typeof s.sourceShown === 'boolean' ? s.sourceShown : DEFAULT_SETTINGS.sourceShown,
