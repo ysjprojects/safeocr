@@ -5,9 +5,15 @@
 html,
 body {
   margin: 0;
-  background: theme('colors.plum.900');
-  color: theme('colors.cream');
+  background: theme('colors.base');
+  color: theme('colors.text');
   -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard focus is visible everywhere without the mouse-click outline. */
+:focus-visible {
+  outline: 2px solid theme('colors.blue');
+  outline-offset: 2px;
 }
 
 /* The rendered OCR output: GLM-OCR's Markdown, HTML tables and KaTeX. */
@@ -24,13 +30,13 @@ body {
 
     th,
     td {
-      border: 1px solid theme('colors.plum.300 / 35%');
+      border: 1px solid theme('colors.surface1');
       padding: 0.25rem 0.5rem;
       vertical-align: top;
     }
 
     th {
-      background: theme('colors.plum.500 / 35%');
+      background: theme('colors.surface0 / 60%');
     }
 
     .katex-display {

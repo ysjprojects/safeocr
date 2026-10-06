@@ -44,7 +44,7 @@ export function forDisplay(text: string, mode: Mode): string {
 const OcrMarkdown: FC<Props> = memo(({text, mode}) => {
   const source = useMemo(() => forDisplay(text, mode), [text, mode]);
   return (
-    <div className="safeocr-prose prose prose-sm prose-invert max-w-none break-words">
+    <div className="safeocr-prose prose prose-sm prose-ctp max-w-none break-words">
       <Markdown rehypePlugins={rehypePlugins} remarkPlugins={remarkPlugins}>
         {source}
       </Markdown>

@@ -1,38 +1,52 @@
-import {type ChangeEvent, type DragEvent, type FC, memo, useCallback, useEffect, useRef, useState} from 'react';
+import {
+  type ChangeEvent,
+  type DragEvent,
+  type FC,
+  type ReactNode,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import {ACCEPT} from '@/lib/inputs';
 
-interface Props {
-  onFiles(files: File[]): void;
-  compact: boolean;
-}
+import Icon from './icons';
+
+type OnFiles = (files: File[]) => void;
 
 /**
- * Drag-and-drop, click-to-browse (multiple files) and paste (images from the clipboard, e.g. a
- * screenshot). Everything stays in this tab: nothing is uploaded anywhere.
+ * Drag-and-drop over the whole app and paste (images from the clipboard, e.g. a screenshot).
+ * Spread `handlers` on the root element; `dragging` is true while files hover over it.
+ * Everything stays in this tab: nothing is uploaded anywhere.
  */
-const Dropzone: FC<Props> = memo(({onFiles, compact}) => {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [over, setOver] = useState(false);
+export function useFileDrop(onFiles: OnFiles) {
+  const [dragging, setDragging] = useState(false);
+  // dragenter/dragleave fire for every child crossed; the overlay shows while the depth is > 0.
+  const depth = useRef(0);
 
-  const browse = useCallback(() => inputRef.current?.click(), []);
-  const onChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(event.target.files ?? []);
-      event.target.value = '';
-      if (files.length > 0) onFiles(files);
-    },
-    [onFiles],
-  );
-  const onDragOver = useCallback((event: DragEvent) => {
+  const onDragEnter = useCallback((event: DragEvent) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
     event.preventDefault();
-    setOver(true);
+    depth.current += 1;
+    setDragging(true);
   }, []);
-  const onDragLeave = useCallback(() => setOver(false), []);
+  const onDragOver = useCallback((event: DragEvent) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+  const onDragLeave = useCallback(() => {
+    depth.current = Math.max(0, depth.current - 1);
+    if (depth.current === 0) setDragging(false);
+  }, []);
   const onDrop = useCallback(
     (event: DragEvent) => {
       event.preventDefault();
-      setOver(false);
+      depth.current = 0;
+      setDragging(false);
       const files = Array.from(event.dataTransfer.files);
       if (files.length > 0) onFiles(files);
     },
@@ -41,9 +55,8 @@ const Dropzone: FC<Props> = memo(({onFiles, compact}) => {
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
-      const items = Array.from(event.clipboardData?.items ?? []);
       const files: File[] = [];
-      for (const item of items) {
+      for (const item of Array.from(event.clipboardData?.items ?? [])) {
         if (item.kind !== 'file') continue;
         const file = item.getAsFile();
         if (file === null) continue;
@@ -61,32 +74,69 @@ const Dropzone: FC<Props> = memo(({onFiles, compact}) => {
     return () => document.removeEventListener('paste', onPaste);
   }, [onFiles]);
 
-  return (
-    <div
-      className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed text-center transition ${
-        compact ? 'gap-1 px-3 py-3' : 'gap-2 px-4 py-8'
-      } ${over ? 'border-candy-400 bg-candy-500/10' : 'border-plum-500/70 bg-plum-950/40 hover:border-candy-500/60'}`}
-      onDragLeave={onDragLeave}
-      onDragOver={onDragOver}
-      onDrop={onDrop}>
-      <input accept={ACCEPT} className="hidden" multiple onChange={onChange} ref={inputRef} type="file" />
-      <p className={`text-cream font-semibold ${compact ? 'text-[12px]' : 'text-[14px]'}`}>
-        Drop images or PDFs here,{' '}
-        <button
-          className="text-candy-300 decoration-candy-500/50 hover:text-candy-200 underline"
-          onClick={browse}
-          type="button">
-          browse
-        </button>
-        , or paste a screenshot
-      </p>
-      <p className="text-plum-300 text-[11px]">
-        PNG, JPEG, WebP, GIF, BMP, AVIF (plus whatever your browser decodes) and multi-page PDF. One file or a whole
-        batch. Files never leave this tab.
-      </p>
-    </div>
+  const handlers = useMemo(
+    () => ({onDragEnter, onDragOver, onDragLeave, onDrop}),
+    [onDragEnter, onDragOver, onDragLeave, onDrop],
   );
-});
-Dropzone.displayName = 'Dropzone';
+  return {dragging, handlers};
+}
 
-export default Dropzone;
+/** A button that opens the file picker (multiple files; images and PDFs). */
+export const FilePicker: FC<{onFiles: OnFiles; className: string; title?: string; children: ReactNode}> = memo(
+  ({onFiles, className, title, children}) => {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const browse = useCallback(() => inputRef.current?.click(), []);
+    const onChange = useCallback(
+      (event: ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(event.target.files ?? []);
+        event.target.value = '';
+        if (files.length > 0) onFiles(files);
+      },
+      [onFiles],
+    );
+    return (
+      <>
+        <input accept={ACCEPT} className="hidden" multiple onChange={onChange} ref={inputRef} type="file" />
+        <button className={className} onClick={browse} title={title} type="button">
+          {children}
+        </button>
+      </>
+    );
+  },
+);
+FilePicker.displayName = 'FilePicker';
+
+/** The empty-state hero: a large target that explains the three ways in. */
+export const DropHero: FC<{onFiles: OnFiles; active: boolean}> = memo(({onFiles, active}) => (
+  <FilePicker
+    className={`flex w-full flex-col items-center gap-3 rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
+      active ? 'border-blue bg-blue/10' : 'border-surface2 bg-mantle hover:border-blue/60 hover:bg-surface0/40'
+    }`}
+    onFiles={onFiles}>
+    <span className="bg-blue/10 text-blue flex h-14 w-14 items-center justify-center rounded-full">
+      <Icon className="h-7 w-7" name="upload" />
+    </span>
+    <span className="text-text text-lg font-semibold">Drop images or PDFs here</span>
+    <span className="text-subtext0 text-sm">
+      or <span className="text-blue font-medium underline underline-offset-2">browse your files</span>, or paste a
+      screenshot with ⌘V / Ctrl+V
+    </span>
+    <span className="text-subtext0 text-xs">
+      PNG, JPEG, WebP, GIF, BMP, AVIF and multi-page PDF · one file or a whole batch · nothing leaves this tab
+    </span>
+  </FilePicker>
+));
+DropHero.displayName = 'DropHero';
+
+/** Full-window cue while files are dragged over the app. */
+export const DropOverlay: FC<{active: boolean}> = memo(({active}) =>
+  active ? (
+    <div className="bg-base/80 pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-6 backdrop-blur-sm">
+      <div className="border-blue bg-blue/10 text-blue flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed px-12 py-10">
+        <Icon className="h-8 w-8" name="upload" />
+        <span className="text-base font-semibold">Drop to add files</span>
+      </div>
+    </div>
+  ) : null,
+);
+DropOverlay.displayName = 'DropOverlay';

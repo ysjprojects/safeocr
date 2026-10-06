@@ -41,12 +41,10 @@ function crc32(bytes: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export interface ZipEntry {
-  name: string;
-  text: string;
-}
+/** A text member (UTF-8) or a binary one (a PDF, for instance); both are stored uncompressed. */
+export type ZipEntry = {name: string; text: string} | {name: string; bytes: Uint8Array};
 
-/** Builds a ZIP archive with one stored (uncompressed) UTF-8 text member per entry. */
+/** Builds a ZIP archive with one stored (uncompressed) member per entry. */
 export function zip(entries: ZipEntry[], date = new Date()): Blob {
   const encoder = new TextEncoder();
   const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | (date.getSeconds() >> 1);
@@ -64,7 +62,7 @@ export function zip(entries: ZipEntry[], date = new Date()): Blob {
     used.add(name);
 
     const nameBytes = encoder.encode(name);
-    const data = encoder.encode(entry.text);
+    const data = 'bytes' in entry ? entry.bytes : encoder.encode(entry.text);
     const crc = crc32(data);
 
     const local = new DataView(new ArrayBuffer(30));

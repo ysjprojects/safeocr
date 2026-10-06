@@ -8,8 +8,8 @@ const DESCRIPTION =
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL;
 
 const loading = () => (
-  <div className="bg-plum-900 text-plum-200 flex h-dvh items-center justify-center">
-    <span className="animate-pulse text-sm">loading SafeOCR…</span>
+  <div className="bg-base text-subtext0 flex h-dvh items-center justify-center">
+    <span className="text-sm motion-safe:animate-pulse">loading SafeOCR…</span>
   </div>
 );
 

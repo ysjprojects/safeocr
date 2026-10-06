@@ -1,9 +1,10 @@
-import {type FC, memo, useCallback} from 'react';
+import {type FC, type KeyboardEvent, memo, useCallback} from 'react';
 
 import type {EngineStatus} from '@/lib/client';
-import {type Engine, GLM_TOTAL_BYTES, PADDLE_TOTAL_BYTES} from '@/lib/protocol';
+import {type Engine, ENGINE_LABEL, GLM_TOTAL_BYTES, PADDLE_TOTAL_BYTES} from '@/lib/protocol';
 
-import {formatBytes, formatSeconds, primaryButtonClass} from './paneShared';
+import Icon from './icons';
+import {ENGINE_DOT, formatBytes, formatSeconds, ghostButtonClass} from './paneShared';
 
 export type WebGpuSupport = 'checking' | 'yes' | 'no';
 
@@ -18,25 +19,28 @@ interface Props {
   deviceMemory: number | null;
 }
 
-const BLURB: Record<Engine, {title: string; points: string[]; size: string}> = {
+const BLURB: Record<Engine, {tagline: string; summary: string; runtime: string; size: string}> = {
   glm: {
-    title: 'GLM-OCR · best quality',
-    points: [
-      '0.9B vision-language model: Markdown with headings, lists, tables (HTML) and formulas (LaTeX).',
-      'Runs on your GPU through WebGPU; needs about 2 GB of GPU memory. Desktop Chrome or Edge first.',
-      'Generative: it can smooth over or invent text on poor scans. Prefer PP-OCRv5 when faithful beats fluent.',
-    ],
+    tagline: 'Best quality',
+    summary:
+      'A 0.9B vision-language model that returns Markdown with headings, lists, HTML tables and LaTeX formulas. Generative: it can smooth over or invent text on poor scans.',
+    runtime: 'GPU via WebGPU · desktop Chrome or Edge first',
     size: `${formatBytes(GLM_TOTAL_BYTES)} download, once`,
   },
   paddle: {
-    title: 'PP-OCRv5 · fast and faithful',
-    points: [
-      'Classic detection + recognition: plain text lines in reading order, nothing invented.',
-      'Runs on the CPU through WebAssembly, in every browser, a few seconds per page.',
-      'No layout: tables flatten into lines, formulas come out as symbols.',
-    ],
+    tagline: 'Fast and faithful',
+    summary:
+      'Classic detection + recognition: plain text lines in reading order, nothing invented. No layout: tables flatten into lines, formulas come out as symbols.',
+    runtime: 'CPU via WebAssembly · every browser · a few seconds per page',
     size: `${formatBytes(PADDLE_TOTAL_BYTES)} of models + 27 MB runtime, once`,
   },
+};
+
+const STATUS_LABEL: Record<EngineStatus['state'], string> = {
+  idle: 'not loaded',
+  loading: 'loading',
+  ready: 'ready',
+  error: 'error',
 };
 
 const EngineCard: FC<Props> = memo(({engine, selected, status, webgpu, deviceMemory, onSelect, onLoad}) => {
@@ -47,6 +51,15 @@ const EngineCard: FC<Props> = memo(({engine, selected, status, webgpu, deviceMem
   const select = useCallback(() => {
     if (!unsupported) onSelect(engine);
   }, [engine, onSelect, unsupported]);
+  // Space/Enter on the card itself; the inner download button keeps its own keyboard activation.
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget || (event.key !== ' ' && event.key !== 'Enter')) return;
+      event.preventDefault();
+      select();
+    },
+    [select],
+  );
   const load = useCallback(() => {
     onSelect(engine);
     onLoad(engine);
@@ -55,81 +68,76 @@ const EngineCard: FC<Props> = memo(({engine, selected, status, webgpu, deviceMem
   return (
     <div
       aria-checked={selected}
-      className={`flex flex-col gap-2 rounded-xl border p-3 text-left transition ${
-        selected
-          ? 'border-candy-400/70 bg-plum-950/70 shadow-[0_0_24px_rgba(255,63,166,0.2)]'
-          : 'border-plum-600/60 bg-plum-900/50'
-      } ${unsupported ? 'opacity-60' : 'hover:border-candy-500/60 cursor-pointer'}`}
+      aria-disabled={unsupported}
+      className={`flex flex-col gap-2 rounded-xl border p-4 text-left transition ${
+        selected ? 'border-blue bg-blue/5 ring-blue ring-1' : 'border-surface1 bg-base'
+      } ${unsupported ? 'opacity-60' : 'hover:border-blue/60 cursor-pointer'}`}
       onClick={select}
+      onKeyDown={onKeyDown}
       role="radio"
-      tabIndex={0}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-cream text-[13px] font-bold">{blurb.title}</span>
-        <StatusChip status={status} unsupported={unsupported} />
+      tabIndex={unsupported ? -1 : 0}>
+      <div className="flex items-center gap-2.5">
+        <span
+          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+            selected ? 'border-blue bg-blue text-crust' : 'border-surface2'
+          }`}>
+          {selected ? <Icon className="h-2.5 w-2.5" name="check" /> : null}
+        </span>
+        <span className="text-text text-sm font-semibold">{ENGINE_LABEL[engine]}</span>
+        <span className="text-subtext0 text-xs">{blurb.tagline}</span>
+        <span className="text-subtext0 ml-auto inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium">
+          <span className={`h-1.5 w-1.5 rounded-full ${unsupported ? 'bg-overlay0' : ENGINE_DOT[status.state]}`} />
+          {unsupported ? 'unavailable' : STATUS_LABEL[status.state]}
+        </span>
       </div>
-      <ul className="text-plum-200 list-disc space-y-0.5 pl-4 text-[11.5px] leading-snug">
-        {blurb.points.map(point => (
-          <li key={point}>{point}</li>
-        ))}
-      </ul>
+      <p className="text-subtext1 text-xs leading-relaxed">{blurb.summary}</p>
+      <p className="text-subtext0 text-[11px]">
+        {blurb.runtime} · {blurb.size}
+      </p>
       {unsupported ? (
-        <p className="text-[11px] text-amber-300">
+        <p className="text-yellow flex items-start gap-1.5 text-xs">
+          <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" name="alert" />
           This browser has no WebGPU. Use desktop Chrome or Edge (Safari 26+ and recent Firefox also work), or stay on
           PP-OCRv5.
         </p>
       ) : null}
       {lowMemory && !unsupported ? (
-        <p className="text-[11px] text-amber-300">
+        <p className="text-yellow flex items-start gap-1.5 text-xs">
+          <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" name="alert" />
           This device reports {deviceMemory} GB of memory; GLM-OCR may run out of GPU memory. Try the low-memory detail
           setting.
         </p>
       ) : null}
       {status.state === 'loading' ? (
         <div>
-          <div className="bg-plum-700 h-1.5 w-full overflow-hidden rounded-full">
+          <div className="bg-surface0 h-1.5 w-full overflow-hidden rounded-full">
             <div
-              className="bg-candy-500 h-full rounded-full transition-[width]"
+              className="bg-blue h-full rounded-full transition-[width]"
               style={{width: `${status.total > 0 ? Math.min(100, (100 * status.loaded) / status.total) : 0}%`}}
             />
           </div>
-          <p className="font-code text-plum-200 mt-1 text-[10.5px]">
+          <p className="font-code text-subtext0 mt-1.5 text-[11px]">
             {status.total > 0 ? `${formatBytes(status.loaded)} / ${formatBytes(status.total)}` : 'starting…'}
             {status.file ? ` · ${status.file.replace(/^onnx\//, '')}` : ''}
             {status.loaded >= status.total && status.total > 0 ? ' · initialising…' : ''}
           </p>
         </div>
       ) : null}
-      {status.state === 'error' ? (
-        <p className="font-code break-words text-[10.5px] text-rose-300">{status.message}</p>
-      ) : null}
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-plum-300 text-[10.5px]">{blurb.size}</span>
-        {status.state === 'idle' || status.state === 'error' ? (
-          <button className={primaryButtonClass} disabled={unsupported} onClick={load} type="button">
-            {status.state === 'error' ? 'Retry' : 'Download & enable'}
+      {status.state === 'error' ? <p className="font-code text-red break-words text-[11px]">{status.message}</p> : null}
+      {status.state === 'idle' || status.state === 'error' ? (
+        <div className="-mb-1 -ml-2">
+          <button className={ghostButtonClass} disabled={unsupported} onClick={load} type="button">
+            <Icon className="h-3.5 w-3.5" name="download" />
+            {status.state === 'error' ? 'Retry download' : 'Download now'}
           </button>
-        ) : null}
-        {status.state === 'ready' && status.loadMs !== null ? (
-          <span className="font-code text-[10.5px] text-emerald-300">loaded in {formatSeconds(status.loadMs)}</span>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
+      {status.state === 'ready' && status.loadMs !== null ? (
+        <p className="font-code text-green text-[11px]">loaded in {formatSeconds(status.loadMs)}</p>
+      ) : null}
     </div>
   );
 });
 EngineCard.displayName = 'EngineCard';
-
-const StatusChip: FC<{status: EngineStatus; unsupported: boolean}> = memo(({status, unsupported}) => {
-  const [label, cls] = unsupported
-    ? ['unavailable', 'border-plum-500/60 text-plum-300']
-    : status.state === 'ready'
-    ? ['ready', 'border-emerald-400/50 bg-emerald-500/10 text-emerald-300']
-    : status.state === 'loading'
-    ? ['loading', 'border-candy-400/60 bg-candy-500/10 text-candy-200']
-    : status.state === 'error'
-    ? ['error', 'border-rose-400/50 bg-rose-500/10 text-rose-300']
-    : ['not loaded', 'border-plum-500/60 text-plum-300'];
-  return <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cls}`}>{label}</span>;
-});
-StatusChip.displayName = 'StatusChip';
 
 export default EngineCard;

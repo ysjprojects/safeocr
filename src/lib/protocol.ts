@@ -48,6 +48,8 @@ export const MODE_SPEC: Record<Mode, ModeSpec> = {
 /** Pixel budget before the image reaches the model; it bounds vision tokens, GPU memory and latency. */
 export type Detail = 'low' | 'standard' | 'high';
 
+export const DETAILS: Detail[] = ['low', 'standard', 'high'];
+
 export const DETAIL_PIXELS: Record<Detail, number> = {
   low: 750_000,
   standard: 1_500_000,
@@ -110,6 +112,27 @@ export interface PixelImage {
   data: ArrayBuffer;
 }
 
+/** An axis-aligned rectangle in the pixels of the image the model saw (`PixelImage` space). */
+export interface PixelBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * One recognised text segment from PP-OCRv5 (a detected box and what it reads). Segments on one
+ * visual line share a `line`, the 0-based index into `text.split('\n')` of the page's output, so
+ * text and scan can point at each other. GLM-OCR produces no segments.
+ */
+export interface OcrSegment {
+  line: number;
+  text: string;
+  /** Recognition confidence, 0–1. */
+  confidence: number;
+  box: PixelBox;
+}
+
 export type WorkerRequest =
   | {kind: 'load'; engine: Engine; hosts: AssetHosts}
   | {kind: 'run'; id: number; engine: Engine; mode: Mode; pixelBudget: number; image: PixelImage}
@@ -122,6 +145,6 @@ export type WorkerResponse =
   | {kind: 'load-error'; engine: Engine; message: string}
   | {kind: 'token'; id: number; text: string}
   | {kind: 'stage'; id: number; message: string}
-  | {kind: 'done'; id: number; text: string; ms: number; tokens: number}
+  | {kind: 'done'; id: number; text: string; ms: number; tokens: number; segments: OcrSegment[] | null}
   | {kind: 'error'; id: number; message: string}
   | {kind: 'cancelled'; id: number};

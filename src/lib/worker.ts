@@ -8,7 +8,7 @@ import * as ort from 'onnxruntime-web/webgpu';
 
 import {GlmEngine} from './engines/glm';
 import {PaddleEngine} from './engines/paddle';
-import type {AssetHosts, Engine, WorkerRequest, WorkerResponse} from './protocol';
+import type {AssetHosts, Engine, OcrSegment, WorkerRequest, WorkerResponse} from './protocol';
 
 interface WorkerScope {
   postMessage(message: WorkerResponse, transfer?: Transferable[]): void;
@@ -89,6 +89,7 @@ async function run(request: Extract<WorkerRequest, {kind: 'run'}>): Promise<void
     }
     let text: string;
     let tokens: number;
+    let segments: OcrSegment[] | null = null;
     if (engine === 'glm') {
       if (glm.engine === null) throw new Error('GLM-OCR is not loaded');
       ({text, tokens} = await glm.engine.recognize(
@@ -103,9 +104,10 @@ async function run(request: Extract<WorkerRequest, {kind: 'run'}>): Promise<void
       const result = await paddle.engine.recognize(image, message => scope.postMessage({kind: 'stage', id, message}));
       text = result.text;
       tokens = result.lines;
+      segments = result.segments;
     }
     if (cancelled.has(id)) scope.postMessage({kind: 'cancelled', id});
-    else scope.postMessage({kind: 'done', id, text, ms: performance.now() - t0, tokens});
+    else scope.postMessage({kind: 'done', id, text, ms: performance.now() - t0, tokens, segments});
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (engine === 'glm' && FATAL.test(message)) {

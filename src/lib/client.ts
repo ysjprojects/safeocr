@@ -4,7 +4,7 @@
  * with the recognised text while streaming partial text to the caller.
  */
 import {resolveAssetHosts} from './assets';
-import type {Engine, Mode, PixelImage, WorkerRequest, WorkerResponse} from './protocol';
+import type {Engine, Mode, OcrSegment, PixelImage, WorkerRequest, WorkerResponse} from './protocol';
 
 export interface EngineStatus {
   state: 'idle' | 'loading' | 'ready' | 'error';
@@ -16,7 +16,7 @@ export interface EngineStatus {
 }
 
 export type RunOutcome =
-  | {kind: 'done'; text: string; ms: number; tokens: number}
+  | {kind: 'done'; text: string; ms: number; tokens: number; segments: OcrSegment[] | null}
   | {kind: 'cancelled'}
   | {kind: 'error'; message: string};
 
@@ -117,7 +117,8 @@ export class OcrClient {
     const worker = new Worker(new URL(/* webpackChunkName: "ocr-worker" */ './worker.ts', import.meta.url));
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.onMessage(event.data);
     worker.onerror = event => {
-      const message = `the OCR worker crashed: ${event.message}`;
+      // A script that could not be fetched (offline, stale deploy) reports no message at all.
+      const message = `the OCR worker crashed: ${event.message || 'its script could not be loaded'}`;
       for (const [id, p] of this.pending) {
         this.pending.delete(id);
         p.resolve({kind: 'error', message});
@@ -169,7 +170,13 @@ export class OcrClient {
         return;
       case 'done':
         this.pending.delete(message.id);
-        p.resolve({kind: 'done', text: message.text, ms: message.ms, tokens: message.tokens});
+        p.resolve({
+          kind: 'done',
+          text: message.text,
+          ms: message.ms,
+          tokens: message.tokens,
+          segments: message.segments,
+        });
         return;
       case 'error':
         this.pending.delete(message.id);

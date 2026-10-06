@@ -21,6 +21,14 @@ const nextConfig = {
         source: '/ocr-runtime/:lib/:version/:path*',
         headers: [{key: 'Cache-Control', value: 'public, max-age=31536000, immutable'}],
       },
+      {
+        // The service worker must never be served stale, or shell updates would lag a full cache lifetime.
+        source: '/sw.js',
+        headers: [
+          {key: 'Cache-Control', value: 'no-cache'},
+          {key: 'Service-Worker-Allowed', value: '/'},
+        ],
+      },
     ];
   },
   webpack: config => {

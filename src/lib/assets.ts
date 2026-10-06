@@ -21,6 +21,22 @@ export function resolveAssetHosts(): AssetHosts {
 
 const CACHE_NAME = 'safeocr-models';
 
+/** Every Cache API bucket holding model files: ours (PP-OCRv5) and Transformers.js's (GLM-OCR). */
+const MODEL_CACHES = [CACHE_NAME, 'transformers-cache'];
+
+/** Deletes the downloaded models from this browser; the next load downloads them again. */
+export async function deleteModelCaches(): Promise<void> {
+  if (typeof caches === 'undefined') return;
+  await Promise.all(MODEL_CACHES.map(name => caches.delete(name)));
+}
+
+/** Bytes this origin stores in the browser (models, mostly), where the browser reports it. */
+export async function storageUsage(): Promise<number | null> {
+  if (typeof navigator === 'undefined' || navigator.storage?.estimate === undefined) return null;
+  const {usage} = await navigator.storage.estimate();
+  return usage ?? null;
+}
+
 async function openCache(): Promise<Cache | null> {
   if (typeof caches === 'undefined') return null;
   try {

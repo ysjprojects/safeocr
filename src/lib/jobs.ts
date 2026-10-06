@@ -2,29 +2,79 @@
  * The batch model of the page: documents (one per dropped file) made of pages (one per image, one
  * per PDF page), each carrying its own OCR state and output. Pure helpers; the component owns state.
  */
-import type {Engine, Mode} from './protocol';
+import type {Engine, Mode, OcrSegment} from './protocol';
 import {MODE_SPEC} from './protocol';
 
 export type PageState = 'idle' | 'queued' | 'running' | 'done' | 'error' | 'cancelled';
 
+/** Quarter turns applied to a page before it is shown or recognised. */
+export type Rotation = 0 | 90 | 180 | 270;
+
+/** A rectangle in fractions (0–1) of the rotated page: the part a region page covers. */
+export interface Region {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** 1-based number among the regions cut from the same source page, for labels. */
+  n: number;
+}
+
+/** The other engine's reading of the same page, for the Compare tab. */
+export interface CompareResult {
+  state: 'running' | 'done' | 'error';
+  engine: Engine;
+  mode: Mode | null;
+  text: string;
+  ms: number | null;
+  tokens: number | null;
+  segments: OcrSegment[] | null;
+  error: string | null;
+}
+
 export interface PageJob {
   id: string;
   docId: string;
-  /** 0-based page index within the document. */
+  /** 0-based page index within the document (the source page, for a region page). */
   index: number;
   state: PageState;
   engine: Engine | null;
   mode: Mode | null;
-  /** Output so far (streams in while running). */
+  /** Output so far (streams in while running), or the user's edited text. */
   text: string;
   stage: string | null;
   ms: number | null;
   tokens: number | null;
+  /** PP-OCRv5's segments (box + confidence) in `width × height` pixels; null for GLM-OCR. */
+  segments: OcrSegment[] | null;
+  /** The text was changed by hand after the run. */
+  edited: boolean;
   previewUrl: string | null;
+  /** Quarter turns baked into `previewUrl` (0 for an image shown as dropped); the pane rotates the rest. */
+  previewRotation: Rotation;
+  /** Size of the pixels the model saw (after rotation, region and the pixel budget). */
   width: number | null;
   height: number | null;
+  /** Physical size in PDF points (1/72 in) of the rotated page or region; images are taken as 150 dpi. */
+  pointWidth: number | null;
+  pointHeight: number | null;
+  rotation: Rotation;
+  /** Set on a region page: the part of its source page it covers. */
+  region: Region | null;
+  compare: CompareResult | null;
   error: string | null;
+  /**
+   * The result that was in place when a rerun was requested. It is restored if the rerun fails or
+   * is stopped and dropped once the rerun succeeds, so a rerun never loses what the page had.
+   */
+  previous: PageResult | null;
 }
+
+/** What one run produces on a page. */
+export type PageResult = Pick<
+  PageJob,
+  'state' | 'engine' | 'mode' | 'text' | 'ms' | 'tokens' | 'segments' | 'edited' | 'error'
+>;
 
 export interface DocJob {
   id: string;
@@ -39,7 +89,7 @@ export interface DocJob {
 let nextId = 1;
 export const newId = (prefix: string): string => `${prefix}${nextId++}`;
 
-export function newPage(docId: string, index: number): PageJob {
+export function newPage(docId: string, index: number, region: Region | null = null): PageJob {
   return {
     id: newId('p'),
     docId,
@@ -51,11 +101,65 @@ export function newPage(docId: string, index: number): PageJob {
     stage: null,
     ms: null,
     tokens: null,
+    segments: null,
+    edited: false,
     previewUrl: null,
+    previewRotation: 0,
     width: null,
     height: null,
+    pointWidth: null,
+    pointHeight: null,
+    rotation: 0,
+    region,
+    compare: null,
     error: null,
+    previous: null,
   };
+}
+
+/** The fields a run fills in; `text` and friends are reset when a run starts. */
+export const RUN_START: Pick<PageJob, 'text' | 'stage' | 'error' | 'ms' | 'tokens' | 'segments' | 'edited'> = {
+  text: '',
+  stage: 'preparing the image',
+  error: null,
+  ms: null,
+  tokens: null,
+  segments: null,
+  edited: false,
+};
+
+/**
+ * Inserts a region page right after the last page cut from the same source page (or the source
+ * page itself), numbering it after its siblings. Returns the new page so it can be queued.
+ */
+export function addRegion(
+  docs: DocJob[],
+  docId: string,
+  index: number,
+  rect: Omit<Region, 'n'>,
+): {docs: DocJob[]; page: PageJob | null} {
+  let page: PageJob | null = null;
+  const next = docs.map(doc => {
+    if (doc.id !== docId) return doc;
+    let at = -1;
+    let n = 0;
+    doc.pages.forEach((p, i) => {
+      if (p.index !== index) return;
+      at = i;
+      if (p.region !== null) n = Math.max(n, p.region.n);
+    });
+    if (at === -1) return doc;
+    const source = doc.pages.find(p => p.index === index && p.region === null);
+    page = {...newPage(docId, index, {...rect, n: n + 1}), rotation: source?.rotation ?? 0};
+    return {...doc, pages: [...doc.pages.slice(0, at + 1), page, ...doc.pages.slice(at + 1)]};
+  });
+  return {docs: next, page};
+}
+
+export function removePage(docs: DocJob[], pageId: string): DocJob[] {
+  return docs.map(doc =>
+    doc.pages.some(p => p.id === pageId) ? {...doc, pages: doc.pages.filter(p => p.id !== pageId)} : doc,
+  );
 }
 
 export function updatePage(
@@ -83,17 +187,106 @@ export function firstQueued(docs: DocJob[]): PageJob | null {
   return null;
 }
 
-/** Marks every page that has not succeeded as queued (what "Run" does). */
-export function queueAll(docs: DocJob[]): DocJob[] {
+/**
+ * Marks the pages `ids` names that have not succeeded as queued (Run on a selection); `null` means
+ * every page (plain Run). Pages that are done stay as they are: those go through a rerun.
+ */
+export function queuePages(docs: DocJob[], ids: ReadonlySet<string> | null): DocJob[] {
   return docs.map(doc => ({
     ...doc,
-    pages: doc.pages.map(p => (p.state === 'done' || p.state === 'running' ? p : {...p, state: 'queued', error: null})),
+    pages: doc.pages.map(p =>
+      p.state === 'done' || p.state === 'running' || (ids !== null && !ids.has(p.id))
+        ? p
+        : {...p, state: 'queued', error: null},
+    ),
   }));
 }
 
-/** Puts queued pages back to idle (what "Stop" does; the running page is cancelled separately). */
+/** Whether Run would process this page: it has never succeeded and is not in flight. */
+export function isPending(page: PageJob): boolean {
+  return page.state === 'idle' || page.state === 'error' || page.state === 'cancelled';
+}
+
+/**
+ * Puts queued pages back (what "Stop" does; the running page is cancelled separately): to idle, or
+ * to the result a pending rerun was about to replace.
+ */
 export function unqueueAll(docs: DocJob[]): DocJob[] {
-  return docs.map(doc => ({...doc, pages: doc.pages.map(p => (p.state === 'queued' ? {...p, state: 'idle'} : p))}));
+  return docs.map(doc => ({
+    ...doc,
+    pages: doc.pages.map(p =>
+      p.state !== 'queued' ? p : p.previous !== null ? {...p, ...p.previous, previous: null} : {...p, state: 'idle'},
+    ),
+  }));
+}
+
+/** Whether a page has run before, so the action offered is a rerun rather than a first run. */
+export function hasRun(page: PageJob): boolean {
+  return page.state === 'done' || page.state === 'error' || page.state === 'cancelled';
+}
+
+/** Queues one page that has run before, keeping its current result until the new run succeeds. */
+export function rerunPage(docs: DocJob[], pageId: string): DocJob[] {
+  return updatePage(docs, pageId, p =>
+    hasRun(p)
+      ? {
+          state: 'queued',
+          previous: {
+            state: p.state,
+            engine: p.engine,
+            mode: p.mode,
+            text: p.text,
+            ms: p.ms,
+            tokens: p.tokens,
+            segments: p.segments,
+            edited: p.edited,
+            error: p.error,
+          },
+        }
+      : {},
+  );
+}
+
+/**
+ * Settles a run that did not succeed. A rerun goes back to the result it was replacing (with a note
+ * when it failed); a first run simply records the failure.
+ */
+export function failPage(
+  docs: DocJob[],
+  pageId: string,
+  failure: {state: 'error'; error: string} | {state: 'cancelled'},
+): DocJob[] {
+  return updatePage(docs, pageId, p => {
+    if (p.previous === null) return {...failure, stage: null};
+    const error =
+      failure.state === 'error' ? `Rerun failed: ${failure.error}. Showing the previous result.` : p.previous.error;
+    return {...p.previous, error, stage: null, previous: null};
+  });
+}
+
+/** Lines of a page's text, the unit segments, confidence and search hits refer to. */
+export function textLines(page: PageJob): string[] {
+  return page.text.length === 0 ? [] : page.text.split('\n');
+}
+
+/** Lowest confidence among a line's segments, or null when the page has no segments (GLM-OCR, edited). */
+export function lineConfidence(page: PageJob, line: number): number | null {
+  if (page.segments === null) return null;
+  let lowest: number | null = null;
+  for (const s of page.segments) {
+    if (s.line === line && (lowest === null || s.confidence < lowest)) lowest = s.confidence;
+  }
+  return lowest;
+}
+
+/** Number of (case-insensitive) occurrences of `query` in the page's text; 0 for an empty query. */
+export function countHits(page: PageJob, query: string): number {
+  if (query.length === 0 || page.text.length === 0) return 0;
+  const haystack = page.text.toLowerCase();
+  const needle = query.toLowerCase();
+  let count = 0;
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) count++;
+  return count;
 }
 
 export function countByState(docs: DocJob[]): Record<PageState, number> {
@@ -102,9 +295,10 @@ export function countByState(docs: DocJob[]): Record<PageState, number> {
   return counts;
 }
 
-/** Display label of a page: the file name, with the page number for PDFs. */
+/** Display label of a page: the file name, with the page number for PDFs and the region number. */
 export function pageLabel(doc: DocJob, page: PageJob): string {
-  return doc.kind === 'pdf' ? `${doc.name} · page ${page.index + 1}` : doc.name;
+  const base = doc.kind === 'pdf' ? `${doc.name} · page ${page.index + 1}` : doc.name;
+  return page.region === null ? base : `${base} · region ${page.region.n}`;
 }
 
 /** File extension for a finished page's output. */
@@ -112,8 +306,9 @@ export function pageExtension(page: PageJob): string {
   return page.engine === 'glm' && page.mode !== null ? MODE_SPEC[page.mode].extension : 'txt';
 }
 
-/** Stem used for downloads: `<file>` for images, `<file>-p<n>` for PDF pages. */
+/** Stem used for downloads: `<file>` for images, `<file>-p<n>` for PDF pages, `-r<n>` for regions. */
 export function pageStem(doc: DocJob, page: PageJob): string {
   const stem = doc.name.replace(/\.[^.]+$/, '');
-  return doc.kind === 'pdf' ? `${stem}-p${String(page.index + 1).padStart(3, '0')}` : stem;
+  const base = doc.kind === 'pdf' ? `${stem}-p${String(page.index + 1).padStart(3, '0')}` : stem;
+  return page.region === null ? base : `${base}-r${page.region.n}`;
 }

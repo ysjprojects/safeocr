@@ -7,7 +7,7 @@ import * as ort from 'onnxruntime-web/webgpu';
 import {type OrtModule, type RecognitionResult, PaddleOcrService} from 'paddleocr';
 
 import {fetchCached} from '../assets';
-import {type AssetHosts, type PixelImage, PADDLE_FILES, PADDLE_TOTAL_BYTES, sum} from '../protocol';
+import {type AssetHosts, type OcrSegment, type PixelImage, PADDLE_FILES, PADDLE_TOTAL_BYTES, sum} from '../protocol';
 import type {LoadProgress} from './glm';
 
 /**
@@ -53,8 +53,14 @@ export class PaddleEngine {
     return new PaddleEngine(service);
   }
 
-  /** Detects text boxes, recognises each, and returns the lines in reading order. */
-  async recognize(image: PixelImage, onStage: (message: string) => void): Promise<{text: string; lines: number}> {
+  /**
+   * Detects text boxes, recognises each, and returns the lines in reading order, plus every
+   * segment with its box and confidence (`line` is its index in `text.split('\n')`).
+   */
+  async recognize(
+    image: PixelImage,
+    onStage: (message: string) => void,
+  ): Promise<{text: string; lines: number; segments: OcrSegment[]}> {
     const results: RecognitionResult[] = await this.service.recognize(
       {width: image.width, height: image.height, data: new Uint8Array(image.data)},
       {
@@ -65,7 +71,18 @@ export class PaddleEngine {
       },
     );
     const {text, lines} = this.service.processRecognition(results);
-    return {text, lines: lines.length};
+    const segments: OcrSegment[] = [];
+    lines.forEach((line, index) => {
+      for (const r of line) {
+        segments.push({
+          line: index,
+          text: r.text,
+          confidence: r.confidence,
+          box: {x: r.box.x, y: r.box.y, width: r.box.width, height: r.box.height},
+        });
+      }
+    });
+    return {text, lines: lines.length, segments};
   }
 
   async dispose(): Promise<void> {

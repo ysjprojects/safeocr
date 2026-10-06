@@ -1,0 +1,13 @@
+{
+  "name": "SafeOCR",
+  "short_name": "SafeOCR",
+  "description": "Private, in-browser OCR for images and PDFs",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#eff1f5",
+  "theme_color": "#1e66f5",
+  "icons": [
+    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable"}
+  ]
+}
