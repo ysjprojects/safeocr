@@ -311,10 +311,18 @@ export function countByState(docs: DocJob[]): Record<PageState, number> {
   return counts;
 }
 
+/** The page within its document: `page 3`, `page 3 · region 1`, `region 1` for an image, '' for an image itself. */
+export function pagePart(doc: DocJob, page: PageJob): string {
+  const parts: string[] = [];
+  if (doc.kind === 'pdf') parts.push(`page ${page.index + 1}`);
+  if (page.region !== null) parts.push(`region ${page.region.n}`);
+  return parts.join(' · ');
+}
+
 /** Display label of a page: the file name, with the page number for PDFs and the region number. */
 export function pageLabel(doc: DocJob, page: PageJob): string {
-  const base = doc.kind === 'pdf' ? `${doc.name} · page ${page.index + 1}` : doc.name;
-  return page.region === null ? base : `${base} · region ${page.region.n}`;
+  const part = pagePart(doc, page);
+  return part === '' ? doc.name : `${doc.name} · ${part}`;
 }
 
 /** File extension for a finished page's output. */
@@ -327,4 +335,21 @@ export function pageStem(doc: DocJob, page: PageJob): string {
   const stem = doc.name.replace(/\.[^.]+$/, '');
   const base = doc.kind === 'pdf' ? `${stem}-p${String(page.index + 1).padStart(3, '0')}` : stem;
   return page.region === null ? base : `${base}-r${page.region.n}`;
+}
+
+/**
+ * A document's finished pages as one file, in order: Markdown when any page is GLM-OCR's (its
+ * output is Markdown, HTML or LaTeX, all at home there), plain text when every page is PP-OCR's.
+ * Each page opens with a marker naming it — an HTML comment in Markdown, which does not render,
+ * a dashed line in text — so the boundaries stay findable without getting in the way.
+ */
+export function combinedDocument(doc: DocJob, pages: PageJob[]): {extension: 'md' | 'txt'; text: string} {
+  const markdown = pages.some(page => page.engine === 'glm');
+  const extension = markdown ? 'md' : 'txt';
+  const sections = pages.map(page => {
+    const part = pagePart(doc, page);
+    const marker = part === '' ? '' : markdown ? `<!-- ${part} -->\n\n` : `---- ${part} ----\n\n`;
+    return `${marker}${page.text.replace(/\s+$/, '')}\n`;
+  });
+  return {extension, text: sections.join('\n')};
 }

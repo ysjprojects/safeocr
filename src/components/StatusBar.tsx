@@ -10,6 +10,7 @@ import {ENGINE_DOT, formatBytes, ghostButtonClass} from './paneShared';
 interface Props {
   onCopyAll(): void;
   onExportAll(): void;
+  onExportCombined(): void;
   onExportPdf(): void;
   engine: Engine;
   status: EngineStatus;
@@ -38,6 +39,7 @@ const StatusBar: FC<Props> = memo(
     isolated,
     onCopyAll,
     onExportAll,
+    onExportCombined,
     onExportPdf,
   }) => {
     const scope = selectedCount > 0 ? 'selected' : 'all';
@@ -109,6 +111,18 @@ const StatusBar: FC<Props> = memo(
             type="button">
             <Icon className="h-3.5 w-3.5" name="download" />
             <span className="hidden sm:inline">Download {scope} (.zip)</span>
+          </button>
+          <button
+            aria-label={`Download ${scope} results as one file per document`}
+            className={ghostButtonClass}
+            disabled={finished === 0}
+            onClick={onExportCombined}
+            title={`One file per document${
+              scope === 'selected' ? ' (selected pages)' : ''
+            }, its pages in order: Markdown (.md) where GLM-OCR read it, plain text (.txt) for PP-OCR; zipped when there are several documents`}
+            type="button">
+            <Icon className="h-3.5 w-3.5" name="book" />
+            <span className="hidden sm:inline">Combined</span>
           </button>
           <button
             aria-label={`Download ${scope} pages as searchable PDF`}

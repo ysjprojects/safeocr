@@ -9,6 +9,7 @@ import {
   type DocJob,
   type PageJob,
   addRegion,
+  combinedDocument,
   countByState,
   countHits,
   failPage,
@@ -759,6 +760,24 @@ const SafeOcrApp: FC = memo(() => {
   }, [combined, finished]);
   const copyAll = useCallback(() => void navigator.clipboard.writeText(combined()), [combined]);
 
+  /** One file per document in scope, its pages in order (.md for GLM-OCR, .txt for PP-OCR); zipped when there are several. */
+  const exportCombined = useCallback(() => {
+    const byDoc = new Map<string, {doc: DocJob; pages: PageJob[]}>();
+    for (const {doc, page} of finished) {
+      const entry = byDoc.get(doc.id) ?? {doc, pages: []};
+      entry.pages.push(page);
+      byDoc.set(doc.id, entry);
+    }
+    const files = [...byDoc.values()].map(({doc, pages}) => {
+      const {extension, text} = combinedDocument(doc, pages);
+      return {name: outputName(doc.name, extension), text, type: extension === 'md' ? 'text/markdown' : 'text/plain'};
+    });
+    if (files.length === 0) return;
+    if (files.length === 1)
+      download(new Blob([files[0].text], {type: `${files[0].type};charset=utf-8`}), files[0].name);
+    else download(zip(files.map(f => ({name: f.name, text: f.text}))), `safeocr-${stamp()}-combined.zip`);
+  }, [finished]);
+
   /** One searchable PDF per document in scope (zipped when there are several). */
   const exportPdf = useCallback(async () => {
     setExporting(true);
@@ -1008,6 +1027,7 @@ const SafeOcrApp: FC = memo(() => {
         isolated={isolated}
         onCopyAll={copyAll}
         onExportAll={exportAll}
+        onExportCombined={exportCombined}
         onExportPdf={exportPdf}
         pending={pending}
         selectedCount={selection.size}
